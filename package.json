@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-preload-skills",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "OpenCode plugin that auto-loads specified skills into agent memory on session start",
   "type": "module",
   "main": "./dist/index.cjs",

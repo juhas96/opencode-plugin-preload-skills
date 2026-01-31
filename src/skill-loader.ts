@@ -69,6 +69,10 @@ export function loadSkill(skillName: string, projectDir: string): ParsedSkill | 
 }
 
 export function loadSkills(skillNames: string[], projectDir: string): ParsedSkill[] {
+  if (!Array.isArray(skillNames)) {
+    return []
+  }
+
   const skills: ParsedSkill[] = []
 
   for (const name of skillNames) {
@@ -82,7 +86,7 @@ export function loadSkills(skillNames: string[], projectDir: string): ParsedSkil
 }
 
 export function formatSkillsForInjection(skills: ParsedSkill[]): string {
-  if (skills.length === 0) {
+  if (!Array.isArray(skills) || skills.length === 0) {
     return ""
   }
 

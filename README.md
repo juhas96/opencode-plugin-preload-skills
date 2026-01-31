@@ -17,6 +17,8 @@ A plugin for [OpenCode](https://opencode.ai) that preloads specified skills into
 - **Debug Logging** — Optional verbose logging for troubleshooting
 - **Zero Runtime Overhead** — Skills loaded once per session
 
+> **⚠️ Warning:** Preloaded skills consume context window tokens on every session. Large skills or many skills can significantly reduce available context for your conversation. Keep skills concise and only preload what's truly needed for every session.
+
 ---
 
 ## Installation
@@ -179,6 +181,15 @@ Session Start
 
 ---
 
+## Best Practices
+
+- **Keep skills concise** — Every token counts against your context window
+- **Preload sparingly** — Only include skills needed for *every* session
+- **Use on-demand loading** — For situational skills, use OpenCode's native `skill` tool instead
+- **Monitor token usage** — Large skills can reduce conversation capacity by thousands of tokens
+
+---
+
 ## Troubleshooting
 
 ### Skills not loading?
@@ -192,6 +203,13 @@ Session Start
 ### Skills lost after compaction?
 
 Ensure `persistAfterCompaction` is `true` (this is the default).
+
+### Context window running out quickly?
+
+You may have too many or too large skills preloaded. Consider:
+- Reducing the number of preloaded skills
+- Trimming skill content to essentials
+- Moving less critical skills to on-demand loading
 
 ---
 

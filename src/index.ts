@@ -40,7 +40,15 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
 
   try {
     const content = readFileSync(configPath, "utf-8")
-    return JSON.parse(content) as Partial<PreloadSkillsConfig>
+    const parsed = JSON.parse(content) as Record<string, unknown>
+    
+    return {
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+      persistAfterCompaction: typeof parsed.persistAfterCompaction === "boolean" 
+        ? parsed.persistAfterCompaction 
+        : undefined,
+      debug: typeof parsed.debug === "boolean" ? parsed.debug : undefined,
+    }
   } catch {
     return {}
   }
@@ -112,6 +120,10 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         return
       }
 
+      if (!input.sessionID) {
+        return
+      }
+
       if (injectedSessions.has(input.sessionID)) {
         log("debug", "Skills already injected for session", {
           sessionID: input.sessionID,
@@ -121,12 +133,10 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
       injectedSessions.add(input.sessionID)
 
-      const syntheticPart = {
-        type: "text",
-        text: formattedContent,
-      } as Part
-
-      output.parts.unshift(syntheticPart)
+      const firstTextPart = output.parts.find((p) => p.type === "text")
+      if (firstTextPart && "text" in firstTextPart) {
+        firstTextPart.text = `${formattedContent}\n\n---\n\n${firstTextPart.text}`
+      }
 
       log("info", "Injected preloaded skills into session", {
         sessionID: input.sessionID,
