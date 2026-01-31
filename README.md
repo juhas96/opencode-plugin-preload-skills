@@ -4,6 +4,7 @@
 
 [![npm version](https://img.shields.io/npm/v/opencode-plugin-preload-skills.svg)](https://www.npmjs.com/package/opencode-plugin-preload-skills)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub](https://img.shields.io/github/stars/juhas96/opencode-plugin-preload-skills?style=social)](https://github.com/juhas96/opencode-plugin-preload-skills)
 
 A plugin for [OpenCode](https://opencode.ai) that preloads specified skills into the agent's context automatically when a session starts. Skills persist across context compaction, ensuring your agent always has access to the knowledge it needs.
 
