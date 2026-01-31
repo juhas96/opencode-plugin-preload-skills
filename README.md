@@ -23,6 +23,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | **Conditional Loading** | Load only if dependency exists |
 | **Token Budget** | Cap total skill tokens to protect context |
 | **Summaries Mode** | Load compact summaries instead of full content |
+| **System Prompt Injection** | Inject skills into system prompt instead of messages |
 | **Usage Analytics** | Track which skills are actually used |
 
 > **⚠️ Warning:** Preloaded skills consume context window tokens. Use `maxTokens` to set a budget and `useSummaries` for large skills.
@@ -90,6 +91,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
     "large-skill": { "useSummary": true },
     "critical-skill": { "useSummary": false }
   },
+  "injectionMethod": "chatMessage",
   "maxTokens": 10000,
   "useSummaries": false,
   "analytics": false,
@@ -110,6 +112,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `groups` | `Record<string, string[]>` | `{}` | Define skill bundles |
 | `conditionalSkills` | `ConditionalSkill[]` | `[]` | Load if condition met |
 | `skillSettings` | `Record<string, SkillSettings>` | `{}` | Per-skill settings |
+| `injectionMethod` | `"chatMessage" \| "systemPrompt"` | `"chatMessage"` | Where to inject skills |
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
 | `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
 | `analytics` | `boolean` | `false` | Track skill usage |
@@ -277,6 +280,33 @@ Override global settings for specific skills:
 **Priority:** `skillSettings` > `useSummaries` (global)
 
 This lets you use full content for critical skills while summarizing large reference materials.
+
+### Injection Method
+
+Choose where skills are injected:
+
+```json
+{
+  "injectionMethod": "systemPrompt"
+}
+```
+
+**Methods:**
+
+| Method | Description | Use Case |
+|--------|-------------|----------|
+| `chatMessage` (default) | Injects skills into user messages | One-time injection, visible in conversation |
+| `systemPrompt` | Injects into system prompt via `experimental.chat.system.transform` hook | Persistent across all LLM calls, invisible to user |
+
+**System prompt injection benefits:**
+- Skills persist automatically (no need for `persistAfterCompaction`)
+- Cleaner conversation history (skills not visible in messages)
+- Skills included in every LLM call automatically
+
+**Chat message injection benefits:**
+- Skills visible in conversation for debugging
+- Works with all OpenCode versions
+- More control over when skills appear
 
 ### Usage Analytics
 

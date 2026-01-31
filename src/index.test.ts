@@ -622,4 +622,118 @@ describe("PreloadSkillsPlugin", () => {
       expect(output.parts[0]!.text).toContain("JSX Content")
     })
   })
+
+  describe("injectionMethod config", () => {
+    it("defaults to chatMessage injection method", async () => {
+      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
+      createConfig({ skills: ["test-skill"] })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+      expect(hooks["chat.message"]).toBeDefined()
+    })
+
+    it("enables system prompt injection when configured", async () => {
+      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
+      createConfig({ skills: ["test-skill"], injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
+    })
+
+    it("injects skills into system prompt array", async () => {
+      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nSystem Skill Content")
+      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const systemOutput = { system: [] as string[] }
+      await (hooks["experimental.chat.system.transform"] as Function)(
+        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
+        systemOutput
+      )
+
+      expect(systemOutput.system.length).toBe(1)
+      expect(systemOutput.system[0]).toContain("System Skill Content")
+    })
+
+    it("does not inject into chat.message when using systemPrompt method", async () => {
+      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nSystem Skill Content")
+      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const msgOutput = createMsgOutput("Hello")
+      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, msgOutput)
+
+      expect(msgOutput.parts[0]!.text).toBe("Hello")
+    })
+
+    it("system prompt injection handles missing sessionID", async () => {
+      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nContent")
+      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const systemOutput = { system: [] as string[] }
+      await (hooks["experimental.chat.system.transform"] as Function)(
+        { model: { id: "test", providerID: "test" } },
+        systemOutput
+      )
+
+      expect(systemOutput.system.length).toBe(0)
+    })
+
+    it("system prompt includes triggered skills", async () => {
+      createSkill("initial-skill", "---\nname: initial-skill\ndescription: Initial\n---\nInitial Content")
+      createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
+      createConfig({
+        skills: ["initial-skill"],
+        fileTypeSkills: { ".ts": ["ts-skill"] },
+        injectionMethod: "systemPrompt"
+      })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      await (hooks["tool.execute.after"] as Function)(
+        { tool: "read", sessionID: "test-session", callID: "call-1" },
+        { title: "", output: "", metadata: { args: { filePath: "test.ts" } } }
+      )
+
+      const systemOutput = { system: [] as string[] }
+      await (hooks["experimental.chat.system.transform"] as Function)(
+        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
+        systemOutput
+      )
+
+      expect(systemOutput.system[0]).toContain("Initial Content")
+      expect(systemOutput.system[0]).toContain("TypeScript Content")
+    })
+
+    it("parses injectionMethod from config correctly", async () => {
+      createConfig({ injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
+    })
+
+    it("ignores invalid injectionMethod values", async () => {
+      createConfig({ injectionMethod: "invalid" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+    })
+  })
 })

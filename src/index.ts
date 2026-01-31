@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join, extname, dirname } from "node:path"
 import { homedir } from "node:os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
-import type { Event, UserMessage, Part } from "@opencode-ai/sdk"
+import type { Event, UserMessage, Part, Model } from "@opencode-ai/sdk"
 import type {
   PreloadSkillsConfig,
   ParsedSkill,
@@ -11,6 +11,7 @@ import type {
   SkillSettings,
   SkillUsageStats,
   AnalyticsData,
+  InjectionMethod,
 } from "./types.js"
 import {
   loadSkills,
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG: PreloadSkillsConfig = {
   groups: {},
   conditionalSkills: [],
   skillSettings: {},
+  injectionMethod: "chatMessage",
   maxTokens: undefined,
   useSummaries: false,
   analytics: false,
@@ -136,6 +138,11 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
           ? parsed.persistAfterCompaction
           : undefined,
       debug: typeof parsed.debug === "boolean" ? parsed.debug : undefined,
+      injectionMethod:
+        parsed.injectionMethod === "systemPrompt" ||
+        parsed.injectionMethod === "chatMessage"
+          ? (parsed.injectionMethod as InjectionMethod)
+          : undefined,
     }
   } catch {
     return {}
@@ -254,6 +261,8 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         lastLoaded: now,
       })
     }
+
+    saveAnalytics()
   }
 
   const saveAnalytics = () => {
@@ -414,7 +423,58 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     }
   }
 
+  const useSystemPromptInjection = config.injectionMethod === "systemPrompt"
+
   return {
+    "experimental.chat.system.transform": useSystemPromptInjection
+      ? async (
+          input: { sessionID?: string; model: Model },
+          output: { system: string[] }
+        ): Promise<void> => {
+          if (!input.sessionID) return
+
+          const state = getSessionState(input.sessionID)
+          const skillsToInject: ParsedSkill[] = []
+
+          if (initialSkills.length > 0) {
+            skillsToInject.push(...initialSkills)
+          }
+
+          for (const name of state.loadedSkills) {
+            const skill = skillCache.get(name)
+            if (skill && !skillsToInject.find((s) => s.name === name)) {
+              skillsToInject.push(skill)
+            }
+          }
+
+          const pending = pendingSkillInjections.get(input.sessionID)
+          if (pending && pending.length > 0) {
+            for (const skill of pending) {
+              if (!skillsToInject.find((s) => s.name === skill.name)) {
+                skillsToInject.push(skill)
+              }
+            }
+            pendingSkillInjections.delete(input.sessionID)
+          }
+
+          if (skillsToInject.length > 0) {
+            const formatted = formatSkillsForInjection(skillsToInject, {
+              useSummaries: config.useSummaries,
+              skillSettings: config.skillSettings,
+            })
+            output.system.push(formatted)
+
+            if (!state.initialSkillsInjected && initialSkills.length > 0) {
+              state.initialSkillsInjected = true
+              log("info", "Injected skills into system prompt", {
+                sessionID: input.sessionID,
+                skills: skillsToInject.map((s) => s.name),
+              })
+            }
+          }
+        }
+      : undefined,
+
     "chat.message": async (
       input: {
         sessionID: string
@@ -457,32 +517,37 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         }
       }
 
-      const contentToInject: string[] = []
+      if (!useSystemPromptInjection) {
+        const contentToInject: string[] = []
 
-      if (!state.initialSkillsInjected && initialFormattedContent) {
-        contentToInject.push(initialFormattedContent)
-        state.initialSkillsInjected = true
-        log("info", "Injected initial preloaded skills", {
-          sessionID: input.sessionID,
-          skills: initialSkills.map((s) => s.name),
-        })
-      }
-
-      const pending = pendingSkillInjections.get(input.sessionID)
-      if (pending && pending.length > 0) {
-        const formatted = formatSkillsForInjection(pending, { useSummaries: config.useSummaries, skillSettings: config.skillSettings })
-        if (formatted) {
-          contentToInject.push(formatted)
-          log("info", "Injected triggered skills", {
+        if (!state.initialSkillsInjected && initialFormattedContent) {
+          contentToInject.push(initialFormattedContent)
+          state.initialSkillsInjected = true
+          log("info", "Injected initial preloaded skills", {
             sessionID: input.sessionID,
-            skills: pending.map((s) => s.name),
+            skills: initialSkills.map((s) => s.name),
           })
         }
-        pendingSkillInjections.delete(input.sessionID)
-      }
 
-      if (contentToInject.length > 0) {
-        firstTextPart.text = `${contentToInject.join("\n\n")}\n\n---\n\n${firstTextPart.text}`
+        const pending = pendingSkillInjections.get(input.sessionID)
+        if (pending && pending.length > 0) {
+          const formatted = formatSkillsForInjection(pending, {
+            useSummaries: config.useSummaries,
+            skillSettings: config.skillSettings,
+          })
+          if (formatted) {
+            contentToInject.push(formatted)
+            log("info", "Injected triggered skills", {
+              sessionID: input.sessionID,
+              skills: pending.map((s) => s.name),
+            })
+          }
+          pendingSkillInjections.delete(input.sessionID)
+        }
+
+        if (contentToInject.length > 0) {
+          firstTextPart.text = `${contentToInject.join("\n\n")}\n\n---\n\n${firstTextPart.text}`
+        }
       }
     },
 

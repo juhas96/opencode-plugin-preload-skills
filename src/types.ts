@@ -2,6 +2,8 @@ export interface SkillSettings {
   useSummary?: boolean
 }
 
+export type InjectionMethod = "systemPrompt" | "chatMessage"
+
 export interface PreloadSkillsConfig {
   skills: string[]
   fileTypeSkills?: Record<string, string[]>
@@ -11,6 +13,7 @@ export interface PreloadSkillsConfig {
   groups?: Record<string, string[]>
   conditionalSkills?: ConditionalSkill[]
   skillSettings?: Record<string, SkillSettings>
+  injectionMethod?: InjectionMethod
   maxTokens?: number
   useSummaries?: boolean
   analytics?: boolean

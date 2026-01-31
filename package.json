@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-preload-skills",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Smart skill loading for OpenCode — automatic, contextual, and budget-aware",
   "type": "module",
   "main": "./dist/index.cjs",
