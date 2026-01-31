@@ -1,18 +1,21 @@
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, extname } from "node:path"
 import { homedir } from "node:os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import type { Event, UserMessage, Part } from "@opencode-ai/sdk"
-import type { PreloadSkillsConfig, ParsedSkill } from "./types.js"
-import { loadSkills, formatSkillsForInjection } from "./skill-loader.js"
+import type { PreloadSkillsConfig, ParsedSkill, SessionState } from "./types.js"
+import { loadSkills, loadSkill, formatSkillsForInjection } from "./skill-loader.js"
 
 export type { PreloadSkillsConfig, ParsedSkill }
 export { loadSkills, formatSkillsForInjection }
 
 const CONFIG_FILENAME = "preload-skills.json"
 
+const FILE_TOOLS = ["read", "edit", "write", "glob", "grep"]
+
 const DEFAULT_CONFIG: PreloadSkillsConfig = {
   skills: [],
+  fileTypeSkills: {},
   persistAfterCompaction: true,
   debug: false,
 }
@@ -32,6 +35,18 @@ function findConfigFile(projectDir: string): string | null {
   return null
 }
 
+function parseFileTypeSkills(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== "object") return {}
+  
+  const result: Record<string, string[]> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (Array.isArray(value)) {
+      result[key] = value.filter((v) => typeof v === "string")
+    }
+  }
+  return result
+}
+
 function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
   const configPath = findConfigFile(projectDir)
   if (!configPath) {
@@ -44,6 +59,7 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
     
     return {
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+      fileTypeSkills: parseFileTypeSkills(parsed.fileTypeSkills),
       persistAfterCompaction: typeof parsed.persistAfterCompaction === "boolean" 
         ? parsed.persistAfterCompaction 
         : undefined,
@@ -54,8 +70,31 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
   }
 }
 
+function getFilePathFromArgs(args: Record<string, unknown>): string | null {
+  if (typeof args.filePath === "string") return args.filePath
+  if (typeof args.path === "string") return args.path
+  if (typeof args.file === "string") return args.file
+  return null
+}
+
+function getSkillsForExtension(
+  ext: string,
+  fileTypeSkills: Record<string, string[]>
+): string[] {
+  const skills: string[] = []
+  
+  for (const [pattern, skillNames] of Object.entries(fileTypeSkills)) {
+    const extensions = pattern.split(",").map((e) => e.trim().toLowerCase())
+    if (extensions.includes(ext.toLowerCase())) {
+      skills.push(...skillNames)
+    }
+  }
+  
+  return [...new Set(skills)]
+}
+
 export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
-  const injectedSessions = new Set<string>()
+  const sessionStates = new Map<string, SessionState>()
 
   const fileConfig = loadConfigFile(ctx.directory)
   const config: PreloadSkillsConfig = {
@@ -80,19 +119,34 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     })
   }
 
-  let loadedSkills: ParsedSkill[] = []
-  let formattedContent = ""
+  const skillCache = new Map<string, ParsedSkill>()
 
-  if (config.skills.length === 0) {
-    log("warn", "No skills configured for preloading. Create .opencode/preload-skills.json")
-  } else {
-    loadedSkills = loadSkills(config.skills, ctx.directory)
-    formattedContent = formatSkillsForInjection(loadedSkills)
+  const getOrLoadSkill = (skillName: string): ParsedSkill | null => {
+    if (skillCache.has(skillName)) {
+      return skillCache.get(skillName) ?? null
+    }
+    const skill = loadSkill(skillName, ctx.directory)
+    if (skill) {
+      skillCache.set(skillName, skill)
+    }
+    return skill
+  }
 
-    const loadedNames = loadedSkills.map((s) => s.name)
+  let initialSkills: ParsedSkill[] = []
+  let initialFormattedContent = ""
+
+  if (config.skills.length > 0) {
+    initialSkills = loadSkills(config.skills, ctx.directory)
+    initialFormattedContent = formatSkillsForInjection(initialSkills)
+
+    for (const skill of initialSkills) {
+      skillCache.set(skill.name, skill)
+    }
+
+    const loadedNames = initialSkills.map((s) => s.name)
     const missingNames = config.skills.filter((s) => !loadedNames.includes(s))
 
-    log("info", `Loaded ${loadedSkills.length} skills for preloading`, {
+    log("info", `Loaded ${initialSkills.length} skills for preloading`, {
       loaded: loadedNames,
       missing: missingNames.length > 0 ? missingNames : undefined,
     })
@@ -104,8 +158,25 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     }
   }
 
-  return {
+  const hasFileTypeSkills = Object.keys(config.fileTypeSkills ?? {}).length > 0
 
+  if (config.skills.length === 0 && !hasFileTypeSkills) {
+    log("warn", "No skills configured. Create .opencode/preload-skills.json")
+  }
+
+  const getSessionState = (sessionID: string): SessionState => {
+    if (!sessionStates.has(sessionID)) {
+      sessionStates.set(sessionID, {
+        initialSkillsInjected: false,
+        loadedSkills: new Set(initialSkills.map((s) => s.name)),
+      })
+    }
+    return sessionStates.get(sessionID)!
+  }
+
+  const pendingSkillInjections = new Map<string, ParsedSkill[]>()
+
+  return {
     "chat.message": async (
       input: {
         sessionID: string
@@ -116,52 +187,122 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
       },
       output: { message: UserMessage; parts: Part[] }
     ): Promise<void> => {
-      if (loadedSkills.length === 0 || !formattedContent) {
-        return
-      }
+      if (!input.sessionID) return
 
-      if (!input.sessionID) {
-        return
-      }
-
-      if (injectedSessions.has(input.sessionID)) {
-        log("debug", "Skills already injected for session", {
-          sessionID: input.sessionID,
-        })
-        return
-      }
-
-      injectedSessions.add(input.sessionID)
-
+      const state = getSessionState(input.sessionID)
       const firstTextPart = output.parts.find((p) => p.type === "text")
-      if (firstTextPart && "text" in firstTextPart) {
-        firstTextPart.text = `${formattedContent}\n\n---\n\n${firstTextPart.text}`
+      if (!firstTextPart || !("text" in firstTextPart)) return
+
+      const contentToInject: string[] = []
+
+      if (!state.initialSkillsInjected && initialFormattedContent) {
+        contentToInject.push(initialFormattedContent)
+        state.initialSkillsInjected = true
+        log("info", "Injected initial preloaded skills", {
+          sessionID: input.sessionID,
+          skills: initialSkills.map((s) => s.name),
+        })
       }
 
-      log("info", "Injected preloaded skills into session", {
-        sessionID: input.sessionID,
-        skillCount: loadedSkills.length,
-        skills: loadedSkills.map((s) => s.name),
-      })
+      const pending = pendingSkillInjections.get(input.sessionID)
+      if (pending && pending.length > 0) {
+        const formatted = formatSkillsForInjection(pending)
+        if (formatted) {
+          contentToInject.push(formatted)
+          log("info", "Injected file-type triggered skills", {
+            sessionID: input.sessionID,
+            skills: pending.map((s) => s.name),
+          })
+        }
+        pendingSkillInjections.delete(input.sessionID)
+      }
+
+      if (contentToInject.length > 0) {
+        firstTextPart.text = `${contentToInject.join("\n\n")}\n\n---\n\n${firstTextPart.text}`
+      }
+    },
+
+    "tool.execute.after": async (
+      input: {
+        tool: string
+        sessionID: string
+        callID: string
+      },
+      _output: {
+        title: string
+        output: string
+        metadata: unknown
+      }
+    ): Promise<void> => {
+      if (!hasFileTypeSkills) return
+      if (!FILE_TOOLS.includes(input.tool)) return
+      if (!input.sessionID) return
+
+      const state = getSessionState(input.sessionID)
+
+      const toolArgs = (_output.metadata as { args?: Record<string, unknown> })?.args
+      if (!toolArgs) return
+
+      const filePath = getFilePathFromArgs(toolArgs)
+      if (!filePath) return
+
+      const ext = extname(filePath)
+      if (!ext) return
+
+      const skillNames = getSkillsForExtension(ext, config.fileTypeSkills ?? {})
+      if (skillNames.length === 0) return
+
+      const newSkills: ParsedSkill[] = []
+      for (const name of skillNames) {
+        if (state.loadedSkills.has(name)) continue
+
+        const skill = getOrLoadSkill(name)
+        if (skill) {
+          newSkills.push(skill)
+          state.loadedSkills.add(name)
+        }
+      }
+
+      if (newSkills.length > 0) {
+        const existing = pendingSkillInjections.get(input.sessionID) ?? []
+        pendingSkillInjections.set(input.sessionID, [...existing, ...newSkills])
+
+        log("debug", "Queued file-type skills for injection", {
+          sessionID: input.sessionID,
+          filePath,
+          extension: ext,
+          skills: newSkills.map((s) => s.name),
+        })
+      }
     },
 
     "experimental.session.compacting": async (
       input: { sessionID: string },
       output: { context: string[]; prompt?: string }
     ): Promise<void> => {
-      if (!config.persistAfterCompaction || loadedSkills.length === 0) {
-        return
+      if (!config.persistAfterCompaction) return
+
+      const state = sessionStates.get(input.sessionID)
+      if (!state || state.loadedSkills.size === 0) return
+
+      const allLoadedSkills: ParsedSkill[] = []
+      for (const name of state.loadedSkills) {
+        const skill = skillCache.get(name)
+        if (skill) allLoadedSkills.push(skill)
       }
 
+      if (allLoadedSkills.length === 0) return
+
+      const formatted = formatSkillsForInjection(allLoadedSkills)
       output.context.push(
-        `## Preloaded Skills\n\nThe following skills were auto-loaded at session start and should persist:\n\n${formattedContent}`
+        `## Preloaded Skills\n\nThe following skills were loaded during this session and should persist:\n\n${formatted}`
       )
 
-      injectedSessions.delete(input.sessionID)
+      state.initialSkillsInjected = false
 
-      log("info", "Added preloaded skills to compaction context", {
+      log("info", "Added all loaded skills to compaction context", {
         sessionID: input.sessionID,
-        skillCount: loadedSkills.length,
+        skillCount: allLoadedSkills.length,
       })
     },
 
@@ -171,8 +312,9 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         "sessionID" in event.properties
       ) {
         const sessionID = event.properties.sessionID as string
-        injectedSessions.delete(sessionID)
-        log("debug", "Cleaned up session tracking", { sessionID })
+        sessionStates.delete(sessionID)
+        pendingSkillInjections.delete(sessionID)
+        log("debug", "Cleaned up session state", { sessionID })
       }
     },
   }
