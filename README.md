@@ -1,234 +1,342 @@
 # opencode-plugin-preload-skills
 
-> Automatically load skills into agent memory — at session start or when touching specific file types
+> Smart skill loading for OpenCode — automatic, contextual, and budget-aware
 
 [![npm version](https://img.shields.io/npm/v/opencode-plugin-preload-skills.svg)](https://www.npmjs.com/package/opencode-plugin-preload-skills)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub](https://img.shields.io/github/stars/juhas96/opencode-plugin-preload-skills?style=social)](https://github.com/juhas96/opencode-plugin-preload-skills)
 
-A plugin for [OpenCode](https://opencode.ai) that preloads specified skills into the agent's context automatically when a session starts. Skills persist across context compaction, ensuring your agent always has access to the knowledge it needs.
+A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads skills based on context — file types, directory patterns, agent type, conversation content, and more.
 
 ---
 
 ## Features
 
-- **Automatic Loading** — Skills are injected on the first message of each session
-- **File-Type Triggers** — Load skills automatically when agent touches specific file types
-- **Compaction Persistence** — Skills survive context compaction and remain available
-- **Multiple Skill Sources** — Searches project and global skill directories
-- **Debug Logging** — Optional verbose logging for troubleshooting
-- **Smart Caching** — Skills loaded once per session, no duplicates
+| Feature | Description |
+|---------|-------------|
+| **Always-On Skills** | Load skills at session start |
+| **File-Type Triggers** | Load skills when touching `.py`, `.ts`, etc. |
+| **Agent-Specific** | Different skills for different agents |
+| **Path Patterns** | Glob patterns like `src/api/**` |
+| **Content Triggers** | Keywords in conversation trigger skills |
+| **Skill Groups** | Bundle skills together with `@group-name` |
+| **Conditional Loading** | Load only if dependency exists |
+| **Token Budget** | Cap total skill tokens to protect context |
+| **Summaries Mode** | Load compact summaries instead of full content |
+| **Usage Analytics** | Track which skills are actually used |
 
-> **⚠️ Warning:** Preloaded skills consume context window tokens on every session. Large skills or many skills can significantly reduce available context for your conversation. Keep skills concise and only preload what's truly needed for every session.
+> **⚠️ Warning:** Preloaded skills consume context window tokens. Use `maxTokens` to set a budget and `useSummaries` for large skills.
 
 ---
 
 ## Quick Start
 
-**1. Add the plugin to your `opencode.json`:**
+**1. Add to `opencode.json`:**
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
   "plugin": ["opencode-plugin-preload-skills"]
 }
 ```
 
-**2. Create the plugin config file `.opencode/preload-skills.json`:**
+**2. Create `.opencode/preload-skills.json`:**
 
 ```json
 {
-  "skills": ["my-coding-standards", "project-architecture"]
+  "skills": ["coding-standards"],
+  "fileTypeSkills": {
+    ".py": ["flask", "python-patterns"],
+    ".ts,.tsx": ["typescript-patterns"]
+  }
 }
 ```
 
-**3. Create a skill file:**
-
-```
-.opencode/skills/my-coding-standards/SKILL.md
-```
-
-```markdown
----
-name: my-coding-standards
-description: Coding standards and conventions for this project
----
-
-## Code Style
-
-- Use 2 spaces for indentation
-- Prefer `const` over `let`
-- Use TypeScript strict mode
-...
-```
-
-**4. Start OpenCode** — your skills are automatically loaded!
+**3. Create skill files in `.opencode/skills/<name>/SKILL.md`**
 
 ---
 
-## Configuration
+## Configuration Reference
 
-Create `preload-skills.json` in one of these locations:
-
-| Priority | Path | Scope |
-|----------|------|-------|
-| 1 | `.opencode/preload-skills.json` | Project |
-| 2 | `./preload-skills.json` | Project root |
-| 3 | `~/.config/opencode/preload-skills.json` | Global |
-
-### Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `skills` | `string[]` | `[]` | Skills to always load at session start |
-| `fileTypeSkills` | `Record<string, string[]>` | `{}` | Skills to load when specific file types are accessed |
-| `persistAfterCompaction` | `boolean` | `true` | Re-inject skills after context compaction |
-| `debug` | `boolean` | `false` | Enable debug logging |
-
-### Full Example
+### All Options
 
 ```json
 {
-  "skills": [
-    "coding-standards"
-  ],
+  "skills": ["always-loaded-skill"],
   "fileTypeSkills": {
-    ".py": ["flask", "python-best-practices"],
-    ".ts,.tsx": ["typescript-advanced-types", "react-patterns"],
-    ".go": ["golang-patterns"],
-    ".rs": ["rust-idioms"]
+    ".py": ["flask"],
+    ".ts,.tsx": ["typescript"]
   },
+  "agentSkills": {
+    "plan": ["planning-skill"],
+    "code": ["coding-skill"]
+  },
+  "pathPatterns": {
+    "src/api/**": ["api-design"],
+    "src/components/**": ["react-patterns"]
+  },
+  "contentTriggers": {
+    "database": ["sql-patterns"],
+    "authentication": ["auth-security"]
+  },
+  "groups": {
+    "frontend": ["react", "css", "testing"],
+    "backend": ["api-design", "database"]
+  },
+  "conditionalSkills": [
+    { "skill": "react", "if": { "packageHasDependency": "react" } },
+    { "skill": "prisma", "if": { "fileExists": "prisma/schema.prisma" } }
+  ],
+  "maxTokens": 10000,
+  "useSummaries": false,
+  "analytics": false,
   "persistAfterCompaction": true,
   "debug": false
 }
 ```
 
-### File-Type Skills
+### Options Table
 
-The `fileTypeSkills` option maps file extensions to skills that should be loaded when the agent reads, edits, or writes files with those extensions.
-
-- **Keys**: Comma-separated file extensions (e.g., `".ts,.tsx"`)
-- **Values**: Array of skill names to load
-- **Trigger**: When agent uses `read`, `edit`, `write`, `glob`, or `grep` on matching files
-- **Deduplication**: Each skill is only loaded once per session, even if multiple files match
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `skills` | `string[]` | `[]` | Always load these skills |
+| `fileTypeSkills` | `Record<string, string[]>` | `{}` | Map file extensions to skills |
+| `agentSkills` | `Record<string, string[]>` | `{}` | Map agent names to skills |
+| `pathPatterns` | `Record<string, string[]>` | `{}` | Map glob patterns to skills |
+| `contentTriggers` | `Record<string, string[]>` | `{}` | Map keywords to skills |
+| `groups` | `Record<string, string[]>` | `{}` | Define skill bundles |
+| `conditionalSkills` | `ConditionalSkill[]` | `[]` | Load if condition met |
+| `maxTokens` | `number` | `undefined` | Max tokens for all skills |
+| `useSummaries` | `boolean` | `false` | Use skill summaries |
+| `analytics` | `boolean` | `false` | Track skill usage |
+| `persistAfterCompaction` | `boolean` | `true` | Keep skills after compaction |
+| `debug` | `boolean` | `false` | Enable debug logs |
 
 ---
 
-## Skill Locations
+## Feature Details
 
-The plugin searches for skills in the following locations (in order):
+### File-Type Skills
 
-| Priority | Path | Scope |
-|----------|------|-------|
-| 1 | `.opencode/skills/<name>/SKILL.md` | Project |
-| 2 | `.claude/skills/<name>/SKILL.md` | Project (Claude-compatible) |
-| 3 | `~/.config/opencode/skills/<name>/SKILL.md` | Global |
-| 4 | `~/.claude/skills/<name>/SKILL.md` | Global (Claude-compatible) |
+Load skills when agent touches files with specific extensions:
 
-The first matching skill file is used.
+```json
+{
+  "fileTypeSkills": {
+    ".py": ["flask", "python-best-practices"],
+    ".ts,.tsx": ["typescript-advanced-types"],
+    ".go": ["golang-patterns"]
+  }
+}
+```
+
+Triggers on: `read`, `edit`, `write`, `glob`, `grep` tools.
+
+### Agent-Specific Skills
+
+Load different skills for different OpenCode agents:
+
+```json
+{
+  "agentSkills": {
+    "plan": ["architecture-planning", "task-breakdown"],
+    "code": ["coding-standards", "testing-patterns"],
+    "review": ["code-review-checklist"]
+  }
+}
+```
+
+### Path Patterns
+
+Use glob patterns to match file paths:
+
+```json
+{
+  "pathPatterns": {
+    "src/api/**": ["api-design", "rest-patterns"],
+    "src/components/**/*.tsx": ["react-component-patterns"],
+    "tests/**": ["testing-best-practices"]
+  }
+}
+```
+
+### Content Triggers
+
+Load skills when keywords appear in conversation:
+
+```json
+{
+  "contentTriggers": {
+    "database": ["sql-patterns", "orm-usage"],
+    "authentication": ["auth-security", "jwt-patterns"],
+    "performance": ["optimization-tips"]
+  }
+}
+```
+
+### Skill Groups
+
+Bundle related skills and reference with `@`:
+
+```json
+{
+  "groups": {
+    "frontend": ["react", "css", "accessibility"],
+    "backend": ["api-design", "database", "caching"]
+  },
+  "skills": ["@frontend"]
+}
+```
+
+Use `@frontend` anywhere you'd use a skill name.
+
+### Conditional Skills
+
+Load skills only when conditions are met:
+
+```json
+{
+  "conditionalSkills": [
+    {
+      "skill": "react-patterns",
+      "if": { "packageHasDependency": "react" }
+    },
+    {
+      "skill": "prisma-guide",
+      "if": { "fileExists": "prisma/schema.prisma" }
+    },
+    {
+      "skill": "ci-patterns",
+      "if": { "envVar": "CI" }
+    }
+  ]
+}
+```
+
+**Condition types:**
+- `packageHasDependency` — Check package.json dependencies
+- `fileExists` — Check if file exists in project
+- `envVar` — Check if environment variable is set
+
+### Token Budget
+
+Limit total tokens to protect your context window:
+
+```json
+{
+  "maxTokens": 8000,
+  "skills": ["skill-a", "skill-b", "skill-c"]
+}
+```
+
+Skills load in order until budget is exhausted. Remaining skills are skipped.
+
+### Skill Summaries
+
+Add a `summary` field to your skill frontmatter for compact loading:
+
+```markdown
+---
+name: my-skill
+description: Full description
+summary: Brief one-liner for summary mode
+---
+```
+
+Enable with:
+
+```json
+{
+  "useSummaries": true
+}
+```
+
+If no `summary` field, auto-generates from first paragraph.
+
+### Usage Analytics
+
+Track which skills are loaded and how often:
+
+```json
+{
+  "analytics": true
+}
+```
+
+Saves to `.opencode/preload-skills-analytics.json`.
 
 ---
 
 ## Skill File Format
 
-Skills use markdown with YAML frontmatter:
-
 ```markdown
 ---
 name: skill-name
-description: Brief description shown in logs
+description: Brief description for logs
+summary: Optional one-liner for summary mode
 ---
 
 # Skill Content
 
-Your skill instructions here. This entire content
-is injected into the agent's context.
-
-## Sections
-
-Organize with headers, code blocks, lists, etc.
+Full instructions here...
 ```
 
-### Required Fields
+### Locations (in priority order)
 
-- `name` — Must match the directory name (lowercase, hyphen-separated)
-- `description` — Brief description for logging
+1. `.opencode/skills/<name>/SKILL.md` (project)
+2. `.claude/skills/<name>/SKILL.md` (project)
+3. `~/.config/opencode/skills/<name>/SKILL.md` (global)
+4. `~/.claude/skills/<name>/SKILL.md` (global)
 
 ---
 
 ## How It Works
 
 ```
-Session Start
-     │
-     ▼
-┌─────────────────────┐
-│  Plugin loads       │
-│  configured skills  │
-│  from disk          │
-└─────────────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│  First message      │──▶ Initial skills injected
-│  in session         │
-└─────────────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│  Agent touches      │──▶ File-type skills loaded if extension
-│  a file             │    matches and skill not yet loaded
-└─────────────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│  Next message       │──▶ Pending file-type skills injected
-└─────────────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│  Context            │──▶ All loaded skills added to
-│  compaction         │    compaction context
-└─────────────────────┘
-     │
-     ▼
-┌─────────────────────┐
-│  Session            │──▶ Cleanup session state
-│  deleted            │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                     SESSION START                        │
+├─────────────────────────────────────────────────────────┤
+│  1. Load `skills` + `conditionalSkills` (if met)        │
+│  2. Apply token budget if set                           │
+│  3. Inject on first message                             │
+├─────────────────────────────────────────────────────────┤
+│                   DURING SESSION                         │
+├─────────────────────────────────────────────────────────┤
+│  On file access:                                         │
+│    → Check fileTypeSkills (by extension)                │
+│    → Check pathPatterns (by glob match)                 │
+│                                                          │
+│  On message:                                             │
+│    → Check agentSkills (by agent name)                  │
+│    → Check contentTriggers (by keyword)                 │
+│    → Inject any pending skills                          │
+├─────────────────────────────────────────────────────────┤
+│                    COMPACTION                            │
+├─────────────────────────────────────────────────────────┤
+│  All loaded skills added to compaction context          │
+│  (if persistAfterCompaction: true)                      │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Best Practices
 
-- **Keep skills concise** — Every token counts against your context window
-- **Use `fileTypeSkills` for language-specific knowledge** — Only load Python skills when working with `.py` files
-- **Preload sparingly** — Only include truly universal skills in `skills` array
-- **Monitor token usage** — Large skills can reduce conversation capacity by thousands of tokens
+1. **Use `fileTypeSkills` over `skills`** — Only load what's needed
+2. **Set `maxTokens`** — Protect your context window
+3. **Use `groups`** — Organize related skills
+4. **Enable `analytics`** — Find unused skills
+5. **Write `summary` fields** — For large skills, enable `useSummaries`
 
 ---
 
 ## Troubleshooting
 
-### Skills not loading?
-
-1. **Check the config file** — Ensure `.opencode/preload-skills.json` exists
-2. **Check the skill path** — Ensure `SKILL.md` exists in the correct directory
-3. **Verify frontmatter** — Both `name` and `description` are required
-4. **Enable debug mode** — Set `"debug": true` in config
-5. **Check logs** — Look for `preload-skills` service messages
-
-### Skills lost after compaction?
-
-Ensure `persistAfterCompaction` is `true` (this is the default).
-
-### Context window running out quickly?
-
-You may have too many or too large skills preloaded. Consider:
-- Reducing the number of preloaded skills
-- Trimming skill content to essentials
-- Moving less critical skills to on-demand loading
+| Problem | Solution |
+|---------|----------|
+| Skills not loading | Check config path, skill file exists, frontmatter valid |
+| Wrong skills loading | Check trigger conditions, enable `debug: true` |
+| Context too small | Reduce skills, set `maxTokens`, enable `useSummaries` |
+| Skills lost after compaction | Ensure `persistAfterCompaction: true` |
 
 ---
 

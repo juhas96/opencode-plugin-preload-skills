@@ -1,21 +1,46 @@
-import { existsSync, readFileSync } from "node:fs"
-import { join, extname } from "node:path"
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import { join, extname, dirname } from "node:path"
 import { homedir } from "node:os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import type { Event, UserMessage, Part } from "@opencode-ai/sdk"
-import type { PreloadSkillsConfig, ParsedSkill, SessionState } from "./types.js"
-import { loadSkills, loadSkill, formatSkillsForInjection } from "./skill-loader.js"
+import type {
+  PreloadSkillsConfig,
+  ParsedSkill,
+  SessionState,
+  ConditionalSkill,
+  SkillUsageStats,
+  AnalyticsData,
+} from "./types.js"
+import {
+  loadSkills,
+  formatSkillsForInjection,
+  filterSkillsByTokenBudget,
+  calculateTotalTokens,
+} from "./skill-loader.js"
+import {
+  checkCondition,
+  matchGlobPattern,
+  textContainsKeyword,
+} from "./utils.js"
 
 export type { PreloadSkillsConfig, ParsedSkill }
 export { loadSkills, formatSkillsForInjection }
 
 const CONFIG_FILENAME = "preload-skills.json"
-
+const ANALYTICS_FILENAME = "preload-skills-analytics.json"
 const FILE_TOOLS = ["read", "edit", "write", "glob", "grep"]
 
 const DEFAULT_CONFIG: PreloadSkillsConfig = {
   skills: [],
   fileTypeSkills: {},
+  agentSkills: {},
+  pathPatterns: {},
+  contentTriggers: {},
+  groups: {},
+  conditionalSkills: [],
+  maxTokens: undefined,
+  useSummaries: false,
+  analytics: false,
   persistAfterCompaction: true,
   debug: false,
 }
@@ -35,9 +60,9 @@ function findConfigFile(projectDir: string): string | null {
   return null
 }
 
-function parseFileTypeSkills(raw: unknown): Record<string, string[]> {
+function parseStringArrayRecord(raw: unknown): Record<string, string[]> {
   if (!raw || typeof raw !== "object") return {}
-  
+
   const result: Record<string, string[]> = {}
   for (const [key, value] of Object.entries(raw)) {
     if (Array.isArray(value)) {
@@ -45,6 +70,18 @@ function parseFileTypeSkills(raw: unknown): Record<string, string[]> {
     }
   }
   return result
+}
+
+function parseConditionalSkills(raw: unknown): ConditionalSkill[] {
+  if (!Array.isArray(raw)) return []
+
+  return raw.filter(
+    (item): item is ConditionalSkill =>
+      typeof item === "object" &&
+      item !== null &&
+      typeof item.skill === "string" &&
+      typeof item.if === "object"
+  )
 }
 
 function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
@@ -56,13 +93,27 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
   try {
     const content = readFileSync(configPath, "utf-8")
     const parsed = JSON.parse(content) as Record<string, unknown>
-    
+
     return {
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
-      fileTypeSkills: parseFileTypeSkills(parsed.fileTypeSkills),
-      persistAfterCompaction: typeof parsed.persistAfterCompaction === "boolean" 
-        ? parsed.persistAfterCompaction 
-        : undefined,
+      fileTypeSkills: parseStringArrayRecord(parsed.fileTypeSkills),
+      agentSkills: parseStringArrayRecord(parsed.agentSkills),
+      pathPatterns: parseStringArrayRecord(parsed.pathPatterns),
+      contentTriggers: parseStringArrayRecord(parsed.contentTriggers),
+      groups: parseStringArrayRecord(parsed.groups),
+      conditionalSkills: parseConditionalSkills(parsed.conditionalSkills),
+      maxTokens:
+        typeof parsed.maxTokens === "number" ? parsed.maxTokens : undefined,
+      useSummaries:
+        typeof parsed.useSummaries === "boolean"
+          ? parsed.useSummaries
+          : undefined,
+      analytics:
+        typeof parsed.analytics === "boolean" ? parsed.analytics : undefined,
+      persistAfterCompaction:
+        typeof parsed.persistAfterCompaction === "boolean"
+          ? parsed.persistAfterCompaction
+          : undefined,
       debug: typeof parsed.debug === "boolean" ? parsed.debug : undefined,
     }
   } catch {
@@ -82,19 +133,52 @@ function getSkillsForExtension(
   fileTypeSkills: Record<string, string[]>
 ): string[] {
   const skills: string[] = []
-  
+
   for (const [pattern, skillNames] of Object.entries(fileTypeSkills)) {
     const extensions = pattern.split(",").map((e) => e.trim().toLowerCase())
     if (extensions.includes(ext.toLowerCase())) {
       skills.push(...skillNames)
     }
   }
-  
+
   return [...new Set(skills)]
+}
+
+function getSkillsForPath(
+  filePath: string,
+  pathPatterns: Record<string, string[]>
+): string[] {
+  const skills: string[] = []
+
+  for (const [pattern, skillNames] of Object.entries(pathPatterns)) {
+    if (matchGlobPattern(filePath, pattern)) {
+      skills.push(...skillNames)
+    }
+  }
+
+  return [...new Set(skills)]
+}
+
+function resolveSkillGroups(
+  skillNames: string[],
+  groups: Record<string, string[]>
+): string[] {
+  const resolved: string[] = []
+
+  for (const name of skillNames) {
+    if (name.startsWith("@") && groups[name.slice(1)]) {
+      resolved.push(...groups[name.slice(1)]!)
+    } else {
+      resolved.push(name)
+    }
+  }
+
+  return [...new Set(resolved)]
 }
 
 export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
   const sessionStates = new Map<string, SessionState>()
+  const analyticsData = new Map<string, AnalyticsData>()
 
   const fileConfig = loadConfigFile(ctx.directory)
   const config: PreloadSkillsConfig = {
@@ -119,48 +203,147 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     })
   }
 
-  const skillCache = new Map<string, ParsedSkill>()
+  const trackSkillUsage = (
+    sessionID: string,
+    skillName: string,
+    triggerType: SkillUsageStats["triggerType"]
+  ) => {
+    if (!config.analytics) return
 
-  const getOrLoadSkill = (skillName: string): ParsedSkill | null => {
-    if (skillCache.has(skillName)) {
-      return skillCache.get(skillName) ?? null
-    }
-    const skill = loadSkill(skillName, ctx.directory)
-    if (skill) {
-      skillCache.set(skillName, skill)
-    }
-    return skill
-  }
-
-  let initialSkills: ParsedSkill[] = []
-  let initialFormattedContent = ""
-
-  if (config.skills.length > 0) {
-    initialSkills = loadSkills(config.skills, ctx.directory)
-    initialFormattedContent = formatSkillsForInjection(initialSkills)
-
-    for (const skill of initialSkills) {
-      skillCache.set(skill.name, skill)
+    if (!analyticsData.has(sessionID)) {
+      analyticsData.set(sessionID, {
+        sessionId: sessionID,
+        skillUsage: new Map(),
+      })
     }
 
-    const loadedNames = initialSkills.map((s) => s.name)
-    const missingNames = config.skills.filter((s) => !loadedNames.includes(s))
+    const data = analyticsData.get(sessionID)!
+    const now = Date.now()
 
-    log("info", `Loaded ${initialSkills.length} skills for preloading`, {
-      loaded: loadedNames,
-      missing: missingNames.length > 0 ? missingNames : undefined,
-    })
-
-    if (missingNames.length > 0) {
-      log("warn", "Some configured skills were not found", {
-        missing: missingNames,
+    if (data.skillUsage.has(skillName)) {
+      const stats = data.skillUsage.get(skillName)!
+      stats.loadCount++
+      stats.lastLoaded = now
+    } else {
+      data.skillUsage.set(skillName, {
+        skillName,
+        loadCount: 1,
+        triggerType,
+        firstLoaded: now,
+        lastLoaded: now,
       })
     }
   }
 
-  const hasFileTypeSkills = Object.keys(config.fileTypeSkills ?? {}).length > 0
+  const saveAnalytics = () => {
+    if (!config.analytics) return
 
-  if (config.skills.length === 0 && !hasFileTypeSkills) {
+    try {
+      const analyticsPath = join(ctx.directory, ".opencode", ANALYTICS_FILENAME)
+      const dir = dirname(analyticsPath)
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+      }
+
+      const serializable: Record<string, unknown> = {}
+      for (const [sessionId, data] of analyticsData) {
+        serializable[sessionId] = {
+          sessionId: data.sessionId,
+          skillUsage: Object.fromEntries(data.skillUsage),
+        }
+      }
+
+      writeFileSync(analyticsPath, JSON.stringify(serializable, null, 2))
+    } catch {
+      log("warn", "Failed to save analytics")
+    }
+  }
+
+  const skillCache = new Map<string, ParsedSkill>()
+
+  const loadSkillsWithBudget = (
+    skillNames: string[],
+    currentTokens: number,
+    triggerType: SkillUsageStats["triggerType"],
+    sessionID: string
+  ): { skills: ParsedSkill[]; tokensUsed: number } => {
+    const resolved = resolveSkillGroups(skillNames, config.groups ?? {})
+    let skills = loadSkills(resolved, ctx.directory)
+
+    for (const skill of skills) {
+      skillCache.set(skill.name, skill)
+    }
+
+    if (config.maxTokens) {
+      const remainingBudget = config.maxTokens - currentTokens
+      skills = filterSkillsByTokenBudget(skills, remainingBudget)
+    }
+
+    for (const skill of skills) {
+      trackSkillUsage(sessionID, skill.name, triggerType)
+    }
+
+    return {
+      skills,
+      tokensUsed: calculateTotalTokens(skills),
+    }
+  }
+
+  const resolveConditionalSkills = (): string[] => {
+    if (!config.conditionalSkills?.length) return []
+
+    const resolved: string[] = []
+    for (const { skill, if: condition } of config.conditionalSkills) {
+      if (checkCondition(condition, ctx.directory)) {
+        resolved.push(skill)
+      }
+    }
+
+    return resolved
+  }
+
+  let initialSkills: ParsedSkill[] = []
+  let initialFormattedContent = ""
+  let initialTokensUsed = 0
+
+  const allInitialSkillNames = [
+    ...config.skills,
+    ...resolveConditionalSkills(),
+  ]
+
+  if (allInitialSkillNames.length > 0) {
+    const result = loadSkillsWithBudget(
+      allInitialSkillNames,
+      0,
+      "initial",
+      "__init__"
+    )
+    initialSkills = result.skills
+    initialTokensUsed = result.tokensUsed
+    initialFormattedContent = formatSkillsForInjection(
+      initialSkills,
+      config.useSummaries
+    )
+
+    const loadedNames = initialSkills.map((s) => s.name)
+    const missingNames = allInitialSkillNames.filter(
+      (s) => !loadedNames.includes(s) && !s.startsWith("@")
+    )
+
+    log("info", `Loaded ${initialSkills.length} initial skills`, {
+      loaded: loadedNames,
+      tokens: initialTokensUsed,
+      missing: missingNames.length > 0 ? missingNames : undefined,
+    })
+  }
+
+  const hasTriggeredSkills =
+    Object.keys(config.fileTypeSkills ?? {}).length > 0 ||
+    Object.keys(config.agentSkills ?? {}).length > 0 ||
+    Object.keys(config.pathPatterns ?? {}).length > 0 ||
+    Object.keys(config.contentTriggers ?? {}).length > 0
+
+  if (allInitialSkillNames.length === 0 && !hasTriggeredSkills) {
     log("warn", "No skills configured. Create .opencode/preload-skills.json")
   }
 
@@ -169,12 +352,46 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
       sessionStates.set(sessionID, {
         initialSkillsInjected: false,
         loadedSkills: new Set(initialSkills.map((s) => s.name)),
+        totalTokensUsed: initialTokensUsed,
       })
     }
     return sessionStates.get(sessionID)!
   }
 
   const pendingSkillInjections = new Map<string, ParsedSkill[]>()
+
+  const queueSkillsForInjection = (
+    sessionID: string,
+    skillNames: string[],
+    triggerType: SkillUsageStats["triggerType"],
+    state: SessionState
+  ) => {
+    const newSkillNames = skillNames.filter((name) => !state.loadedSkills.has(name))
+    if (newSkillNames.length === 0) return
+
+    const result = loadSkillsWithBudget(
+      newSkillNames,
+      state.totalTokensUsed,
+      triggerType,
+      sessionID
+    )
+
+    if (result.skills.length > 0) {
+      for (const skill of result.skills) {
+        state.loadedSkills.add(skill.name)
+      }
+      state.totalTokensUsed += result.tokensUsed
+
+      const existing = pendingSkillInjections.get(sessionID) ?? []
+      pendingSkillInjections.set(sessionID, [...existing, ...result.skills])
+
+      log("debug", `Queued ${triggerType} skills for injection`, {
+        sessionID,
+        skills: result.skills.map((s) => s.name),
+        tokens: result.tokensUsed,
+      })
+    }
+  }
 
   return {
     "chat.message": async (
@@ -193,6 +410,32 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
       const firstTextPart = output.parts.find((p) => p.type === "text")
       if (!firstTextPart || !("text" in firstTextPart)) return
 
+      const messageText = firstTextPart.text
+
+      if (input.agent && config.agentSkills?.[input.agent]) {
+        queueSkillsForInjection(
+          input.sessionID,
+          config.agentSkills[input.agent]!,
+          "agent",
+          state
+        )
+      }
+
+      if (config.contentTriggers) {
+        for (const [keyword, skillNames] of Object.entries(
+          config.contentTriggers
+        )) {
+          if (textContainsKeyword(messageText, [keyword])) {
+            queueSkillsForInjection(
+              input.sessionID,
+              skillNames,
+              "content",
+              state
+            )
+          }
+        }
+      }
+
       const contentToInject: string[] = []
 
       if (!state.initialSkillsInjected && initialFormattedContent) {
@@ -206,10 +449,10 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
       const pending = pendingSkillInjections.get(input.sessionID)
       if (pending && pending.length > 0) {
-        const formatted = formatSkillsForInjection(pending)
+        const formatted = formatSkillsForInjection(pending, config.useSummaries)
         if (formatted) {
           contentToInject.push(formatted)
-          log("info", "Injected file-type triggered skills", {
+          log("info", "Injected triggered skills", {
             sessionID: input.sessionID,
             skills: pending.map((s) => s.name),
           })
@@ -234,45 +477,31 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         metadata: unknown
       }
     ): Promise<void> => {
-      if (!hasFileTypeSkills) return
       if (!FILE_TOOLS.includes(input.tool)) return
       if (!input.sessionID) return
 
       const state = getSessionState(input.sessionID)
 
-      const toolArgs = (_output.metadata as { args?: Record<string, unknown> })?.args
+      const toolArgs = (_output.metadata as { args?: Record<string, unknown> })
+        ?.args
       if (!toolArgs) return
 
       const filePath = getFilePathFromArgs(toolArgs)
       if (!filePath) return
 
       const ext = extname(filePath)
-      if (!ext) return
-
-      const skillNames = getSkillsForExtension(ext, config.fileTypeSkills ?? {})
-      if (skillNames.length === 0) return
-
-      const newSkills: ParsedSkill[] = []
-      for (const name of skillNames) {
-        if (state.loadedSkills.has(name)) continue
-
-        const skill = getOrLoadSkill(name)
-        if (skill) {
-          newSkills.push(skill)
-          state.loadedSkills.add(name)
+      if (ext && config.fileTypeSkills) {
+        const extSkills = getSkillsForExtension(ext, config.fileTypeSkills)
+        if (extSkills.length > 0) {
+          queueSkillsForInjection(input.sessionID, extSkills, "fileType", state)
         }
       }
 
-      if (newSkills.length > 0) {
-        const existing = pendingSkillInjections.get(input.sessionID) ?? []
-        pendingSkillInjections.set(input.sessionID, [...existing, ...newSkills])
-
-        log("debug", "Queued file-type skills for injection", {
-          sessionID: input.sessionID,
-          filePath,
-          extension: ext,
-          skills: newSkills.map((s) => s.name),
-        })
+      if (config.pathPatterns) {
+        const pathSkills = getSkillsForPath(filePath, config.pathPatterns)
+        if (pathSkills.length > 0) {
+          queueSkillsForInjection(input.sessionID, pathSkills, "path", state)
+        }
       }
     },
 
@@ -293,7 +522,10 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
       if (allLoadedSkills.length === 0) return
 
-      const formatted = formatSkillsForInjection(allLoadedSkills)
+      const formatted = formatSkillsForInjection(
+        allLoadedSkills,
+        config.useSummaries
+      )
       output.context.push(
         `## Preloaded Skills\n\nThe following skills were loaded during this session and should persist:\n\n${formatted}`
       )
@@ -304,6 +536,8 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         sessionID: input.sessionID,
         skillCount: allLoadedSkills.length,
       })
+
+      saveAnalytics()
     },
 
     event: async ({ event }: { event: Event }): Promise<void> => {
@@ -314,7 +548,9 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
         const sessionID = event.properties.sessionID as string
         sessionStates.delete(sessionID)
         pendingSkillInjections.delete(sessionID)
+        analyticsData.delete(sessionID)
         log("debug", "Cleaned up session state", { sessionID })
+        saveAnalytics()
       }
     },
   }
