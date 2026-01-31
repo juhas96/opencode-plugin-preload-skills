@@ -21,14 +21,6 @@ A plugin for [OpenCode](https://opencode.ai) that preloads specified skills into
 
 ---
 
-## Installation
-
-```bash
-npm install opencode-plugin-preload-skills
-```
-
----
-
 ## Quick Start
 
 **1. Add the plugin to your `opencode.json`:**
