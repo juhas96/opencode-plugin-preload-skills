@@ -125,7 +125,7 @@ describe("PreloadSkillsPlugin", () => {
   describe("chat.message hook", () => {
     it("injects initial skills on first message", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nSkill Content Here")
-      createConfig({ skills: ["test-skill"] })
+      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
@@ -140,7 +140,7 @@ describe("PreloadSkillsPlugin", () => {
 
     it("does not re-inject skills on subsequent messages", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"] })
+      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
@@ -156,7 +156,7 @@ describe("PreloadSkillsPlugin", () => {
 
     it("triggers agent-specific skills", async () => {
       createSkill("plan-skill", "---\nname: plan-skill\ndescription: Plan\n---\nPlan Content")
-      createConfig({ agentSkills: { plan: ["plan-skill"] } })
+      createConfig({ agentSkills: { plan: ["plan-skill"] }, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
@@ -169,7 +169,7 @@ describe("PreloadSkillsPlugin", () => {
 
     it("triggers content-based skills", async () => {
       createSkill("db-skill", "---\nname: db-skill\ndescription: DB\n---\nDatabase Content")
-      createConfig({ contentTriggers: { database: ["db-skill"] } })
+      createConfig({ contentTriggers: { database: ["db-skill"] }, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
@@ -208,14 +208,18 @@ describe("PreloadSkillsPlugin", () => {
   describe("tool.execute.after hook", () => {
     it("triggers file type skills", async () => {
       createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
-      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
+      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] }, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
+      await (hooks["tool.execute.before"] as Function)(
+        { tool: "read", sessionID: "test-session", callID: "call-1" },
+        { args: { filePath: "src/index.ts" } }
+      )
       await (hooks["tool.execute.after"] as Function)(
         { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "src/index.ts" } } }
+        { title: "", output: "", metadata: {} }
       )
 
       const output = createMsgOutput("Next message")
@@ -226,14 +230,18 @@ describe("PreloadSkillsPlugin", () => {
 
     it("triggers path pattern skills", async () => {
       createSkill("api-skill", "---\nname: api-skill\ndescription: API\n---\nAPI Content")
-      createConfig({ pathPatterns: { "src/api/**": ["api-skill"] } })
+      createConfig({ pathPatterns: { "src/api/**": ["api-skill"] }, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
+      await (hooks["tool.execute.before"] as Function)(
+        { tool: "edit", sessionID: "test-session", callID: "call-1" },
+        { args: { filePath: "src/api/users.ts" } }
+      )
       await (hooks["tool.execute.after"] as Function)(
         { tool: "edit", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "src/api/users.ts" } } }
+        { title: "", output: "", metadata: {} }
       )
 
       const output = createMsgOutput("Message")
@@ -273,9 +281,13 @@ describe("PreloadSkillsPlugin", () => {
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
+      await (hooks["tool.execute.before"] as Function)(
+        { tool: "read", sessionID: "test-session", callID: "call-1" },
+        { args: { path: "test.ts" } }
+      )
       await (hooks["tool.execute.after"] as Function)(
         { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { path: "test.ts" } } }
+        { title: "", output: "", metadata: {} }
       )
 
       await (hooks["tool.execute.after"] as Function)(
@@ -406,7 +418,8 @@ describe("PreloadSkillsPlugin", () => {
       createConfig({
         conditionalSkills: [
           { skill: "prisma-skill", if: { fileExists: "prisma/schema.prisma" } }
-        ]
+        ],
+        injectionMethod: "chatMessage"
       })
 
       const ctx = createMockContext()
@@ -424,7 +437,8 @@ describe("PreloadSkillsPlugin", () => {
       createConfig({
         conditionalSkills: [
           { skill: "react-skill", if: { packageHasDependency: "react" } }
-        ]
+        ],
+        injectionMethod: "chatMessage"
       })
 
       const ctx = createMockContext()
@@ -461,7 +475,8 @@ describe("PreloadSkillsPlugin", () => {
       createSkill("css", "---\nname: css\ndescription: CSS\n---\nCSS Content")
       createConfig({
         groups: { frontend: ["react", "css"] },
-        skills: ["@frontend"]
+        skills: ["@frontend"],
+        injectionMethod: "chatMessage"
       })
 
       const ctx = createMockContext()
@@ -481,7 +496,8 @@ describe("PreloadSkillsPlugin", () => {
       createSkill("large", "---\nname: large\ndescription: Large\n---\n" + "x".repeat(10000))
       createConfig({
         skills: ["small", "large"],
-        maxTokens: 100
+        maxTokens: 100,
+        injectionMethod: "chatMessage"
       })
 
       const ctx = createMockContext()
@@ -498,7 +514,7 @@ describe("PreloadSkillsPlugin", () => {
   describe("useSummaries", () => {
     it("uses summaries when enabled", async () => {
       createSkill("test", "---\nname: test\ndescription: Test\nsummary: Brief summary\n---\nFull content here")
-      createConfig({ skills: ["test"], useSummaries: true })
+      createConfig({ skills: ["test"], useSummaries: true, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
@@ -518,7 +534,8 @@ describe("PreloadSkillsPlugin", () => {
       createConfig({
         skills: ["full", "brief"],
         useSummaries: false,
-        skillSettings: { brief: { useSummary: true } }
+        skillSettings: { brief: { useSummary: true } },
+        injectionMethod: "chatMessage"
       })
 
       const ctx = createMockContext()
@@ -606,14 +623,18 @@ describe("PreloadSkillsPlugin", () => {
   describe("multiple file extension support", () => {
     it("supports comma-separated extensions", async () => {
       createSkill("jsx-skill", "---\nname: jsx-skill\ndescription: JSX\n---\nJSX Content")
-      createConfig({ fileTypeSkills: { ".jsx,.tsx": ["jsx-skill"] } })
+      createConfig({ fileTypeSkills: { ".jsx,.tsx": ["jsx-skill"] }, injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
+      await (hooks["tool.execute.before"] as Function)(
+        { tool: "read", sessionID: "test-session", callID: "call-1" },
+        { args: { filePath: "Component.tsx" } }
+      )
       await (hooks["tool.execute.after"] as Function)(
         { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "Component.tsx" } } }
+        { title: "", output: "", metadata: {} }
       )
 
       const output = createMsgOutput("Message")
@@ -624,25 +645,26 @@ describe("PreloadSkillsPlugin", () => {
   })
 
   describe("injectionMethod config", () => {
-    it("defaults to chatMessage injection method", async () => {
+    it("defaults to systemPrompt injection method", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
       createConfig({ skills: ["test-skill"] })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
-      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
       expect(hooks["chat.message"]).toBeDefined()
     })
 
-    it("enables system prompt injection when configured", async () => {
+    it("uses chatMessage injection when explicitly configured", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
-      createConfig({ skills: ["test-skill"], injectionMethod: "systemPrompt" })
+      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
-      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
+      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+      expect(hooks["chat.message"]).toBeDefined()
     })
 
     it("injects skills into system prompt array", async () => {
@@ -703,9 +725,13 @@ describe("PreloadSkillsPlugin", () => {
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
+      await (hooks["tool.execute.before"] as Function)(
+        { tool: "read", sessionID: "test-session", callID: "call-1" },
+        { args: { filePath: "test.ts" } }
+      )
       await (hooks["tool.execute.after"] as Function)(
         { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "test.ts" } } }
+        { title: "", output: "", metadata: {} }
       )
 
       const systemOutput = { system: [] as string[] }
@@ -727,13 +753,13 @@ describe("PreloadSkillsPlugin", () => {
       expect(hooks["experimental.chat.system.transform"]).toBeDefined()
     })
 
-    it("ignores invalid injectionMethod values", async () => {
+    it("falls back to default for invalid injectionMethod values", async () => {
       createConfig({ injectionMethod: "invalid" })
 
       const ctx = createMockContext()
       const hooks = await PreloadSkillsPlugin(ctx)
 
-      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
     })
   })
 })

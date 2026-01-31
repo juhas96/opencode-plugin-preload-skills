@@ -91,7 +91,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
     "large-skill": { "useSummary": true },
     "critical-skill": { "useSummary": false }
   },
-  "injectionMethod": "chatMessage",
+  "injectionMethod": "systemPrompt",
   "maxTokens": 10000,
   "useSummaries": false,
   "analytics": false,
@@ -112,7 +112,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `groups` | `Record<string, string[]>` | `{}` | Define skill bundles |
 | `conditionalSkills` | `ConditionalSkill[]` | `[]` | Load if condition met |
 | `skillSettings` | `Record<string, SkillSettings>` | `{}` | Per-skill settings |
-| `injectionMethod` | `"chatMessage" \| "systemPrompt"` | `"chatMessage"` | Where to inject skills |
+| `injectionMethod` | `"chatMessage" \| "systemPrompt"` | `"systemPrompt"` | Where to inject skills |
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
 | `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
 | `analytics` | `boolean` | `false` | Track skill usage |
@@ -287,7 +287,7 @@ Choose where skills are injected:
 
 ```json
 {
-  "injectionMethod": "systemPrompt"
+  "injectionMethod": "chatMessage"
 }
 ```
 
@@ -295,17 +295,17 @@ Choose where skills are injected:
 
 | Method | Description | Use Case |
 |--------|-------------|----------|
-| `chatMessage` (default) | Injects skills into user messages | One-time injection, visible in conversation |
-| `systemPrompt` | Injects into system prompt via `experimental.chat.system.transform` hook | Persistent across all LLM calls, invisible to user |
+| `systemPrompt` (default) | Injects into system prompt via `experimental.chat.system.transform` hook | Persistent across all LLM calls, invisible to user |
+| `chatMessage` | Injects skills into user messages | One-time injection, visible in conversation |
 
-**System prompt injection benefits:**
+**System prompt injection benefits (default):**
+- File-triggered skills available on next LLM step (same turn)
 - Skills persist automatically (no need for `persistAfterCompaction`)
 - Cleaner conversation history (skills not visible in messages)
-- Skills included in every LLM call automatically
 
 **Chat message injection benefits:**
 - Skills visible in conversation for debugging
-- Works with all OpenCode versions
+- Works with older OpenCode versions
 - More control over when skills appear
 
 ### Usage Analytics

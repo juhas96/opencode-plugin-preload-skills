@@ -41,7 +41,7 @@ const DEFAULT_CONFIG: PreloadSkillsConfig = {
   groups: {},
   conditionalSkills: [],
   skillSettings: {},
-  injectionMethod: "chatMessage",
+  injectionMethod: "systemPrompt",
   maxTokens: undefined,
   useSummaries: false,
   analytics: false,
@@ -116,7 +116,7 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
     const content = readFileSync(configPath, "utf-8")
     const parsed = JSON.parse(content) as Record<string, unknown>
 
-    return {
+    const config: Partial<PreloadSkillsConfig> = {
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
       fileTypeSkills: parseStringArrayRecord(parsed.fileTypeSkills),
       agentSkills: parseStringArrayRecord(parsed.agentSkills),
@@ -125,25 +125,28 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
       groups: parseStringArrayRecord(parsed.groups),
       conditionalSkills: parseConditionalSkills(parsed.conditionalSkills),
       skillSettings: parseSkillSettings(parsed.skillSettings),
-      maxTokens:
-        typeof parsed.maxTokens === "number" ? parsed.maxTokens : undefined,
-      useSummaries:
-        typeof parsed.useSummaries === "boolean"
-          ? parsed.useSummaries
-          : undefined,
-      analytics:
-        typeof parsed.analytics === "boolean" ? parsed.analytics : undefined,
-      persistAfterCompaction:
-        typeof parsed.persistAfterCompaction === "boolean"
-          ? parsed.persistAfterCompaction
-          : undefined,
-      debug: typeof parsed.debug === "boolean" ? parsed.debug : undefined,
-      injectionMethod:
-        parsed.injectionMethod === "systemPrompt" ||
-        parsed.injectionMethod === "chatMessage"
-          ? (parsed.injectionMethod as InjectionMethod)
-          : undefined,
     }
+
+    if (typeof parsed.maxTokens === "number") {
+      config.maxTokens = parsed.maxTokens
+    }
+    if (typeof parsed.useSummaries === "boolean") {
+      config.useSummaries = parsed.useSummaries
+    }
+    if (typeof parsed.analytics === "boolean") {
+      config.analytics = parsed.analytics
+    }
+    if (typeof parsed.persistAfterCompaction === "boolean") {
+      config.persistAfterCompaction = parsed.persistAfterCompaction
+    }
+    if (typeof parsed.debug === "boolean") {
+      config.debug = parsed.debug
+    }
+    if (parsed.injectionMethod === "systemPrompt" || parsed.injectionMethod === "chatMessage") {
+      config.injectionMethod = parsed.injectionMethod as InjectionMethod
+    }
+
+    return config
   } catch {
     return {}
   }
@@ -389,6 +392,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
   }
 
   const pendingSkillInjections = new Map<string, ParsedSkill[]>()
+  const pendingToolFilePaths = new Map<string, string>()
 
   const queueSkillsForInjection = (
     sessionID: string,
@@ -551,34 +555,54 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
       }
     },
 
-    "tool.execute.after": async (
-      input: {
-        tool: string
-        sessionID: string
-        callID: string
-      },
-      _output: {
-        title: string
-        output: string
-        metadata: unknown
+    "tool.execute.before": async (
+      input: { tool: string; sessionID: string; callID: string },
+      output: { args: Record<string, unknown> }
+    ): Promise<void> => {
+      if (!FILE_TOOLS.includes(input.tool)) return
+
+      const filePath = getFilePathFromArgs(output.args)
+      if (filePath) {
+        pendingToolFilePaths.set(input.callID, filePath)
+        log("debug", "Captured file path from tool", {
+          tool: input.tool,
+          callID: input.callID,
+          filePath,
+        })
       }
+    },
+
+    "tool.execute.after": async (
+      input: { tool: string; sessionID: string; callID: string },
+      _output: { title: string; output: string; metadata: unknown }
     ): Promise<void> => {
       if (!FILE_TOOLS.includes(input.tool)) return
       if (!input.sessionID) return
 
+      const filePath = pendingToolFilePaths.get(input.callID)
+      pendingToolFilePaths.delete(input.callID)
+
+      if (!filePath) {
+        log("debug", "No file path found for tool call", {
+          tool: input.tool,
+          callID: input.callID,
+        })
+        return
+      }
+
       const state = getSessionState(input.sessionID)
-
-      const toolArgs = (_output.metadata as { args?: Record<string, unknown> })
-        ?.args
-      if (!toolArgs) return
-
-      const filePath = getFilePathFromArgs(toolArgs)
-      if (!filePath) return
-
       const ext = extname(filePath)
+
+      log("debug", "Processing file access", {
+        tool: input.tool,
+        filePath,
+        extension: ext,
+      })
+
       if (ext && config.fileTypeSkills) {
         const extSkills = getSkillsForExtension(ext, config.fileTypeSkills)
         if (extSkills.length > 0) {
+          log("debug", "Found skills for extension", { ext, skills: extSkills })
           queueSkillsForInjection(input.sessionID, extSkills, "fileType", state)
         }
       }
@@ -586,6 +610,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
       if (config.pathPatterns) {
         const pathSkills = getSkillsForPath(filePath, config.pathPatterns)
         if (pathSkills.length > 0) {
+          log("debug", "Found skills for path pattern", { filePath, skills: pathSkills })
           queueSkillsForInjection(input.sessionID, pathSkills, "path", state)
         }
       }
