@@ -1,10 +1,15 @@
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
-import type { Event, UserMessage, Part, Config } from "@opencode-ai/sdk"
+import type { Event, UserMessage, Part } from "@opencode-ai/sdk"
 import type { PreloadSkillsConfig, ParsedSkill } from "./types.js"
 import { loadSkills, formatSkillsForInjection } from "./skill-loader.js"
 
 export type { PreloadSkillsConfig, ParsedSkill }
 export { loadSkills, formatSkillsForInjection }
+
+const CONFIG_FILENAME = "preload-skills.json"
 
 const DEFAULT_CONFIG: PreloadSkillsConfig = {
   skills: [],
@@ -12,11 +17,43 @@ const DEFAULT_CONFIG: PreloadSkillsConfig = {
   debug: false,
 }
 
+function findConfigFile(projectDir: string): string | null {
+  const locations = [
+    join(projectDir, ".opencode", CONFIG_FILENAME),
+    join(projectDir, CONFIG_FILENAME),
+    join(homedir(), ".config", "opencode", CONFIG_FILENAME),
+  ]
+
+  for (const path of locations) {
+    if (existsSync(path)) {
+      return path
+    }
+  }
+  return null
+}
+
+function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
+  const configPath = findConfigFile(projectDir)
+  if (!configPath) {
+    return {}
+  }
+
+  try {
+    const content = readFileSync(configPath, "utf-8")
+    return JSON.parse(content) as Partial<PreloadSkillsConfig>
+  } catch {
+    return {}
+  }
+}
+
 export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
   const injectedSessions = new Set<string>()
-  let loadedSkills: ParsedSkill[] = []
-  let formattedContent = ""
-  let config: PreloadSkillsConfig = DEFAULT_CONFIG
+
+  const fileConfig = loadConfigFile(ctx.directory)
+  const config: PreloadSkillsConfig = {
+    ...DEFAULT_CONFIG,
+    ...fileConfig,
+  }
 
   const log = (
     level: "debug" | "info" | "warn" | "error",
@@ -35,39 +72,31 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     })
   }
 
-  return {
-    config: async (openCodeConfig: Config) => {
-      const pluginConfig = (openCodeConfig as Record<string, unknown>)[
-        "opencode-plugin-preload-skills"
-      ] as Partial<PreloadSkillsConfig> | undefined
+  let loadedSkills: ParsedSkill[] = []
+  let formattedContent = ""
 
-      config = {
-        ...DEFAULT_CONFIG,
-        ...pluginConfig,
-      }
+  if (config.skills.length === 0) {
+    log("warn", "No skills configured for preloading. Create .opencode/preload-skills.json")
+  } else {
+    loadedSkills = loadSkills(config.skills, ctx.directory)
+    formattedContent = formatSkillsForInjection(loadedSkills)
 
-      if (config.skills.length === 0) {
-        log("warn", "No skills configured for preloading")
-        return
-      }
+    const loadedNames = loadedSkills.map((s) => s.name)
+    const missingNames = config.skills.filter((s) => !loadedNames.includes(s))
 
-      loadedSkills = loadSkills(config.skills, ctx.directory)
-      formattedContent = formatSkillsForInjection(loadedSkills)
+    log("info", `Loaded ${loadedSkills.length} skills for preloading`, {
+      loaded: loadedNames,
+      missing: missingNames.length > 0 ? missingNames : undefined,
+    })
 
-      const loadedNames = loadedSkills.map((s) => s.name)
-      const missingNames = config.skills.filter((s) => !loadedNames.includes(s))
-
-      log("info", `Loaded ${loadedSkills.length} skills for preloading`, {
-        loaded: loadedNames,
-        missing: missingNames.length > 0 ? missingNames : undefined,
+    if (missingNames.length > 0) {
+      log("warn", "Some configured skills were not found", {
+        missing: missingNames,
       })
+    }
+  }
 
-      if (missingNames.length > 0) {
-        log("warn", "Some configured skills were not found", {
-          missing: missingNames,
-        })
-      }
-    },
+  return {
 
     "chat.message": async (
       input: {

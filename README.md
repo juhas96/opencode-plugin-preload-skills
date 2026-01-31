@@ -34,14 +34,19 @@ npm install opencode-plugin-preload-skills
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-preload-skills"],
-  "opencode-plugin-preload-skills": {
-    "skills": ["my-coding-standards", "project-architecture"]
-  }
+  "plugin": ["opencode-plugin-preload-skills"]
 }
 ```
 
-**2. Create a skill file:**
+**2. Create the plugin config file `.opencode/preload-skills.json`:**
+
+```json
+{
+  "skills": ["my-coding-standards", "project-architecture"]
+}
+```
+
+**3. Create a skill file:**
 
 ```
 .opencode/skills/my-coding-standards/SKILL.md
@@ -61,11 +66,21 @@ description: Coding standards and conventions for this project
 ...
 ```
 
-**3. Start OpenCode** — your skills are automatically loaded!
+**4. Start OpenCode** — your skills are automatically loaded!
 
 ---
 
 ## Configuration
+
+Create `preload-skills.json` in one of these locations:
+
+| Priority | Path | Scope |
+|----------|------|-------|
+| 1 | `.opencode/preload-skills.json` | Project |
+| 2 | `./preload-skills.json` | Project root |
+| 3 | `~/.config/opencode/preload-skills.json` | Global |
+
+### Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -77,17 +92,13 @@ description: Coding standards and conventions for this project
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-plugin-preload-skills"],
-  "opencode-plugin-preload-skills": {
-    "skills": [
-      "coding-standards",
-      "api-patterns",
-      "testing-guide"
-    ],
-    "persistAfterCompaction": true,
-    "debug": false
-  }
+  "skills": [
+    "coding-standards",
+    "api-patterns",
+    "testing-guide"
+  ],
+  "persistAfterCompaction": true,
+  "debug": false
 }
 ```
 
@@ -172,10 +183,11 @@ Session Start
 
 ### Skills not loading?
 
-1. **Check the skill path** — Ensure `SKILL.md` exists in the correct directory
-2. **Verify frontmatter** — Both `name` and `description` are required
-3. **Enable debug mode** — Set `"debug": true` in config
-4. **Check logs** — Look for `preload-skills` service messages
+1. **Check the config file** — Ensure `.opencode/preload-skills.json` exists
+2. **Check the skill path** — Ensure `SKILL.md` exists in the correct directory
+3. **Verify frontmatter** — Both `name` and `description` are required
+4. **Enable debug mode** — Set `"debug": true` in config
+5. **Check logs** — Look for `preload-skills` service messages
 
 ### Skills lost after compaction?
 
