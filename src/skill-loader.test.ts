@@ -95,6 +95,49 @@ More content here.`
       expect(skill).toBeNull()
     })
 
+    it("handles skill without frontmatter", () => {
+      createSkill("no-frontmatter", "# Just Content\n\nNo frontmatter here.")
+
+      const skill = loadSkill("no-frontmatter", testDir)
+
+      expect(skill).not.toBeNull()
+      expect(skill!.name).toBe("no-frontmatter")
+      expect(skill!.description).toBe("")
+    })
+
+    it("truncates auto-summary when content is very long", () => {
+      const longParagraph = "This is a very long paragraph. ".repeat(50)
+      createSkill(
+        "long-content",
+        `---
+name: long-content
+description: Test
+---
+
+# Title
+
+${longParagraph}
+
+## Next Section`
+      )
+
+      const skill = loadSkill("long-content", testDir)
+
+      expect(skill!.summary).not.toBeNull()
+      expect(skill!.summary!.length).toBeLessThanOrEqual(503)
+      expect(skill!.summary).toMatch(/\.\.\.$/,)
+    })
+
+    it("returns null when file read fails", () => {
+      const skillDir = join(skillsDir, "unreadable-skill")
+      mkdirSync(skillDir, { recursive: true })
+      mkdirSync(join(skillDir, "SKILL.md"))
+
+      const skill = loadSkill("unreadable-skill", testDir)
+
+      expect(skill).toBeNull()
+    })
+
     it("calculates token count", () => {
       createSkill(
         "token-test",
@@ -189,6 +232,49 @@ ${"a".repeat(100)}`
 
     it("handles non-array gracefully", () => {
       expect(formatSkillsForInjection(null as unknown as ParsedSkill[])).toBe("")
+    })
+
+    it("accepts options object for backward compatibility", () => {
+      const result = formatSkillsForInjection(mockSkills, { useSummaries: true })
+
+      expect(result).toContain("Summary A")
+      expect(result).not.toContain("Content A")
+    })
+
+    it("per-skill useSummary overrides global useSummaries=false", () => {
+      const result = formatSkillsForInjection(mockSkills, {
+        useSummaries: false,
+        skillSettings: { "skill-a": { useSummary: true } }
+      })
+
+      expect(result).toContain("Summary A")
+      expect(result).not.toContain("Content A")
+      expect(result).toContain("Content B")
+      expect(result).not.toContain("Summary B")
+    })
+
+    it("per-skill useSummary overrides global useSummaries=true", () => {
+      const result = formatSkillsForInjection(mockSkills, {
+        useSummaries: true,
+        skillSettings: { "skill-b": { useSummary: false } }
+      })
+
+      expect(result).toContain("Summary A")
+      expect(result).not.toContain("Content A")
+      expect(result).toContain("Content B")
+      expect(result).not.toContain("Summary B")
+    })
+
+    it("skills without settings follow global useSummaries", () => {
+      const result = formatSkillsForInjection(mockSkills, {
+        useSummaries: true,
+        skillSettings: {}
+      })
+
+      expect(result).toContain("Summary A")
+      expect(result).toContain("Summary B")
+      expect(result).not.toContain("Content A")
+      expect(result).not.toContain("Content B")
     })
   })
 

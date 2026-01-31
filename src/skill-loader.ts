@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import type { ParsedSkill } from "./types.js"
+import type { ParsedSkill, SkillSettings } from "./types.js"
 import { estimateTokens } from "./utils.js"
 
 const SKILL_FILENAME = "SKILL.md"
@@ -112,16 +112,30 @@ export function loadSkills(skillNames: string[], projectDir: string): ParsedSkil
   return skills
 }
 
+export interface FormatOptions {
+  useSummaries?: boolean
+  skillSettings?: Record<string, SkillSettings>
+}
+
 export function formatSkillsForInjection(
   skills: ParsedSkill[],
-  useSummaries: boolean = false
+  options: boolean | FormatOptions = false
 ): string {
   if (!Array.isArray(skills) || skills.length === 0) {
     return ""
   }
 
+  const opts: FormatOptions = typeof options === "boolean" 
+    ? { useSummaries: options } 
+    : options
+  
+  const globalUseSummaries = opts.useSummaries ?? false
+  const skillSettings = opts.skillSettings ?? {}
+
   const parts = skills.map((skill) => {
-    const content = useSummaries && skill.summary ? skill.summary : skill.content
+    const perSkillSetting = skillSettings[skill.name]?.useSummary
+    const shouldUseSummary = perSkillSetting ?? globalUseSummaries
+    const content = shouldUseSummary && skill.summary ? skill.summary : skill.content
     return `<preloaded-skill name="${skill.name}">\n${content}\n</preloaded-skill>`
   })
 

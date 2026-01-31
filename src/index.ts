@@ -8,6 +8,7 @@ import type {
   ParsedSkill,
   SessionState,
   ConditionalSkill,
+  SkillSettings,
   SkillUsageStats,
   AnalyticsData,
 } from "./types.js"
@@ -38,6 +39,7 @@ const DEFAULT_CONFIG: PreloadSkillsConfig = {
   contentTriggers: {},
   groups: {},
   conditionalSkills: [],
+  skillSettings: {},
   maxTokens: undefined,
   useSummaries: false,
   analytics: false,
@@ -84,6 +86,24 @@ function parseConditionalSkills(raw: unknown): ConditionalSkill[] {
   )
 }
 
+function parseSkillSettings(raw: unknown): Record<string, SkillSettings> {
+  if (!raw || typeof raw !== "object") return {}
+
+  const result: Record<string, SkillSettings> = {}
+  for (const [skillName, settings] of Object.entries(raw)) {
+    if (typeof settings === "object" && settings !== null) {
+      const parsed: SkillSettings = {}
+      if ("useSummary" in settings && typeof settings.useSummary === "boolean") {
+        parsed.useSummary = settings.useSummary
+      }
+      if (Object.keys(parsed).length > 0) {
+        result[skillName] = parsed
+      }
+    }
+  }
+  return result
+}
+
 function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
   const configPath = findConfigFile(projectDir)
   if (!configPath) {
@@ -102,6 +122,7 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
       contentTriggers: parseStringArrayRecord(parsed.contentTriggers),
       groups: parseStringArrayRecord(parsed.groups),
       conditionalSkills: parseConditionalSkills(parsed.conditionalSkills),
+      skillSettings: parseSkillSettings(parsed.skillSettings),
       maxTokens:
         typeof parsed.maxTokens === "number" ? parsed.maxTokens : undefined,
       useSummaries:
@@ -322,7 +343,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
     initialTokensUsed = result.tokensUsed
     initialFormattedContent = formatSkillsForInjection(
       initialSkills,
-      config.useSummaries
+      { useSummaries: config.useSummaries, skillSettings: config.skillSettings }
     )
 
     const loadedNames = initialSkills.map((s) => s.name)
@@ -449,7 +470,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
       const pending = pendingSkillInjections.get(input.sessionID)
       if (pending && pending.length > 0) {
-        const formatted = formatSkillsForInjection(pending, config.useSummaries)
+        const formatted = formatSkillsForInjection(pending, { useSummaries: config.useSummaries, skillSettings: config.skillSettings })
         if (formatted) {
           contentToInject.push(formatted)
           log("info", "Injected triggered skills", {
@@ -524,7 +545,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
       const formatted = formatSkillsForInjection(
         allLoadedSkills,
-        config.useSummaries
+        { useSummaries: config.useSummaries, skillSettings: config.skillSettings }
       )
       output.context.push(
         `## Preloaded Skills\n\nThe following skills were loaded during this session and should persist:\n\n${formatted}`

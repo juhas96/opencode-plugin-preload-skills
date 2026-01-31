@@ -1,3 +1,7 @@
+export interface SkillSettings {
+  useSummary?: boolean
+}
+
 export interface PreloadSkillsConfig {
   skills: string[]
   fileTypeSkills?: Record<string, string[]>
@@ -6,6 +10,7 @@ export interface PreloadSkillsConfig {
   contentTriggers?: Record<string, string[]>
   groups?: Record<string, string[]>
   conditionalSkills?: ConditionalSkill[]
+  skillSettings?: Record<string, SkillSettings>
   maxTokens?: number
   useSummaries?: boolean
   analytics?: boolean

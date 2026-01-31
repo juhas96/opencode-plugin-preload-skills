@@ -120,6 +120,11 @@ describe("checkCondition", () => {
     it("returns false when no package.json", () => {
       expect(checkCondition({ packageHasDependency: "react" }, testDir)).toBe(false)
     })
+
+    it("returns false when package.json is invalid JSON", () => {
+      writeFileSync(join(testDir, "package.json"), "not valid json {{{")
+      expect(checkCondition({ packageHasDependency: "react" }, testDir)).toBe(false)
+    })
   })
 
   describe("envVar", () => {

@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-preload-skills",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Smart skill loading for OpenCode — automatic, contextual, and budget-aware",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -56,6 +56,7 @@
   "devDependencies": {
     "@opencode-ai/plugin": "^1.0.85",
     "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^4.0.18",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"

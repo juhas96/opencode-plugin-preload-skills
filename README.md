@@ -86,6 +86,10 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
     { "skill": "react", "if": { "packageHasDependency": "react" } },
     { "skill": "prisma", "if": { "fileExists": "prisma/schema.prisma" } }
   ],
+  "skillSettings": {
+    "large-skill": { "useSummary": true },
+    "critical-skill": { "useSummary": false }
+  },
   "maxTokens": 10000,
   "useSummaries": false,
   "analytics": false,
@@ -105,8 +109,9 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `contentTriggers` | `Record<string, string[]>` | `{}` | Map keywords to skills |
 | `groups` | `Record<string, string[]>` | `{}` | Define skill bundles |
 | `conditionalSkills` | `ConditionalSkill[]` | `[]` | Load if condition met |
+| `skillSettings` | `Record<string, SkillSettings>` | `{}` | Per-skill settings |
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
-| `useSummaries` | `boolean` | `false` | Use skill summaries |
+| `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
 | `analytics` | `boolean` | `false` | Track skill usage |
 | `persistAfterCompaction` | `boolean` | `true` | Keep skills after compaction |
 | `debug` | `boolean` | `false` | Enable debug logs |
@@ -251,6 +256,27 @@ Enable with:
 ```
 
 If no `summary` field, auto-generates from first paragraph.
+
+### Per-Skill Settings
+
+Override global settings for specific skills:
+
+```json
+{
+  "useSummaries": false,
+  "skillSettings": {
+    "large-reference": { "useSummary": true },
+    "critical-instructions": { "useSummary": false }
+  }
+}
+```
+
+**Available settings:**
+- `useSummary` — Override global `useSummaries` for this skill
+
+**Priority:** `skillSettings` > `useSummaries` (global)
+
+This lets you use full content for critical skills while summarizing large reference materials.
 
 ### Usage Analytics
 
