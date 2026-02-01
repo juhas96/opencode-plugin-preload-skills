@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import type { ParsedSkill, SkillSettings } from "./types.js"
-import { estimateTokens } from "./utils.js"
+import type { ParsedSkill, SkillSettings } from "../types.js"
+import { estimateTokens } from "../utils.js"
 
 const SKILL_FILENAME = "SKILL.md"
 

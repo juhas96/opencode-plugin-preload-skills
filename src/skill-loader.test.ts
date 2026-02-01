@@ -7,7 +7,7 @@ import {
   formatSkillsForInjection,
   calculateTotalTokens,
   filterSkillsByTokenBudget,
-} from "./skill-loader.js"
+} from "./skills/loader.js"
 import type { ParsedSkill } from "./types.js"
 
 describe("skill-loader", () => {
