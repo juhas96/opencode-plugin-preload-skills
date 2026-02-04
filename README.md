@@ -25,6 +25,8 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | **Summaries Mode** | Load compact summaries instead of full content |
 | **Content Minification** | Minify skill content before injection to save tokens |
 | **System Prompt Injection** | Inject skills into system prompt instead of messages |
+| **Toast Notifications** | Show TUI toast when skills are loaded |
+| **`loaded_skills` Tool** | LLM agent can query loaded skills (also shows toast to user) |
 | **Usage Analytics** | Track which skills are actually used |
 
 > **⚠️ Warning:** Preloaded skills consume context window tokens. Use `maxTokens` to set a budget, `useSummaries` for large skills, or `useMinification` to reduce token usage.
@@ -96,6 +98,8 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
   "maxTokens": 10000,
   "useSummaries": false,
   "useMinification": false,
+  "showToasts": false,
+  "enableTools": true,
   "analytics": false,
   "persistAfterCompaction": true,
   "debug": false
@@ -118,6 +122,8 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
 | `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
 | `useMinification` | `boolean` | `false` | Minify skill content before injection |
+| `showToasts` | `boolean` | `false` | Show TUI toast notifications when skills are loaded |
+| `enableTools` | `boolean` | `true` | Register `loaded_skills` tool for LLM agents |
 | `analytics` | `boolean` | `false` | Track skill usage |
 | `persistAfterCompaction` | `boolean` | `true` | Keep skills after compaction |
 | `debug` | `boolean` | `false` | Enable debug logs |
@@ -282,6 +288,38 @@ When enabled, the following transformations are applied:
 - Leading/trailing blank lines are removed
 
 Works with both `systemPrompt` and `chatMessage` injection methods, and can be combined with `useSummaries` — summaries are also minified when both are enabled.
+
+### Toast Notifications
+
+Show a TUI toast notification whenever skills are loaded or triggered:
+
+```json
+{
+  "showToasts": true
+}
+```
+
+Toasts appear for:
+- **Initial skills** — when session-start skills are first injected
+- **Triggered skills** — when file-type, path, agent, or content triggers load new skills
+
+Each toast displays the skill names and how many were loaded, e.g. `Loaded 2 skills: react, typescript` or `Triggered skill: api-design`.
+
+### `loaded_skills` Tool
+
+Registers a custom tool that LLM agents can call to query skill state:
+
+```json
+{
+  "enableTools": true
+}
+```
+
+Enabled by default. When the agent calls `loaded_skills`, it:
+- Returns a list of all loaded skills with names, descriptions, and token counts
+- Shows a toast notification to the user with the same info (requires `showToasts: true`)
+
+Ask the agent "what skills are loaded?" and it will use this tool — you'll see the answer both in the conversation and as a toast. Disable with `"enableTools": false`.
 
 ### Per-Skill Settings
 

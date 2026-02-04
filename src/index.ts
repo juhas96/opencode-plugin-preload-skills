@@ -1,5 +1,5 @@
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
-import type { PreloadSkillsConfig, ParsedSkill, PluginContext, Logger } from "./types.js"
+import type { PreloadSkillsConfig, ParsedSkill, PluginContext, Logger, ToastFn } from "./types.js"
 import { loadConfig } from "./config/loader.js"
 import { loadSkills, formatSkillsForInjection, calculateTotalTokens } from "./skills/loader.js"
 import { SkillResolverImpl, resolveSkillGroups } from "./skills/resolver.js"
@@ -97,10 +97,18 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
   const skillResolver = new SkillResolverImpl(config, ctx.directory)
 
+  const toast: ToastFn = (message, variant = "info") => {
+    if (!config.showToasts) return
+    ctx.client.tui.showToast({
+      body: { message, variant, duration: 3000 },
+    })
+  }
+
   const pluginContext: PluginContext = {
     config,
     projectDir: ctx.directory,
     log,
+    toast,
     sessionManager,
     skillResolver,
     initialSkills,

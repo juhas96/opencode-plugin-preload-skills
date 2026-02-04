@@ -14,7 +14,7 @@ interface ChatMessageOutput {
 }
 
 export function createChatMessageHook(ctx: PluginContext) {
-  const { config, sessionManager, skillResolver, initialSkills, initialFormattedContent, log } = ctx
+  const { config, sessionManager, skillResolver, initialSkills, initialFormattedContent, log, toast } = ctx
   const useSystemPromptInjection = config.injectionMethod === "systemPrompt"
 
   return async (input: ChatMessageInput, output: ChatMessageOutput): Promise<void> => {
@@ -60,10 +60,12 @@ export function createChatMessageHook(ctx: PluginContext) {
       if (!state.initialSkillsInjected && initialFormattedContent) {
         contentToInject.push(initialFormattedContent)
         state.initialSkillsInjected = true
+        const names = initialSkills.map((s) => s.name)
         log("info", "Injected initial preloaded skills", {
           sessionID: input.sessionID,
-          skills: initialSkills.map((s) => s.name),
+          skills: names,
         })
+        toast(`Loaded ${names.length} skill${names.length === 1 ? "" : "s"}: ${names.join(", ")}`)
       }
 
       const pending = sessionManager.getPendingSkills(input.sessionID)
@@ -75,10 +77,12 @@ export function createChatMessageHook(ctx: PluginContext) {
         })
         if (formatted) {
           contentToInject.push(formatted)
+          const pendingNames = pending.map((s) => s.name)
           log("info", "Injected triggered skills", {
             sessionID: input.sessionID,
-            skills: pending.map((s) => s.name),
+            skills: pendingNames,
           })
+          toast(`Triggered skill${pendingNames.length === 1 ? "" : "s"}: ${pendingNames.join(", ")}`)
         }
         sessionManager.clearPendingSkills(input.sessionID)
       }

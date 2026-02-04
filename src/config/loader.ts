@@ -23,6 +23,8 @@ export const DEFAULT_CONFIG: PreloadSkillsConfig = {
   maxTokens: undefined,
   useSummaries: false,
   useMinification: false,
+  showToasts: false,
+  enableTools: true,
   analytics: false,
   persistAfterCompaction: true,
   debug: false,
@@ -114,6 +116,12 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
     }
     if (typeof parsed.useMinification === "boolean") {
       config.useMinification = parsed.useMinification
+    }
+    if (typeof parsed.showToasts === "boolean") {
+      config.showToasts = parsed.showToasts
+    }
+    if (typeof parsed.enableTools === "boolean") {
+      config.enableTools = parsed.enableTools
     }
     if (typeof parsed.analytics === "boolean") {
       config.analytics = parsed.analytics

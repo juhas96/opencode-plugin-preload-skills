@@ -12,7 +12,7 @@ interface SystemPromptOutput {
 }
 
 export function createSystemPromptHook(ctx: PluginContext) {
-  const { config, sessionManager, initialSkills, log } = ctx
+  const { config, sessionManager, initialSkills, log, toast } = ctx
 
   return async (input: SystemPromptInput, output: SystemPromptOutput): Promise<void> => {
     if (!input.sessionID) return
@@ -51,10 +51,17 @@ export function createSystemPromptHook(ctx: PluginContext) {
 
       if (!state.initialSkillsInjected && initialSkills.length > 0) {
         state.initialSkillsInjected = true
+        const names = initialSkills.map((s) => s.name)
         log("info", "Injected skills into system prompt", {
           sessionID: input.sessionID,
-          skills: skillsToInject.map((s) => s.name),
+          skills: names,
         })
+        toast(`Loaded ${names.length} skill${names.length === 1 ? "" : "s"}: ${names.join(", ")}`)
+      }
+
+      if (pending && pending.length > 0) {
+        const pendingNames = pending.map((s) => s.name)
+        toast(`Triggered skill${pendingNames.length === 1 ? "" : "s"}: ${pendingNames.join(", ")}`)
       }
     }
   }

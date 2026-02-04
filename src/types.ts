@@ -19,6 +19,8 @@ export interface PreloadSkillsConfig {
   maxTokens?: number
   useSummaries?: boolean
   useMinification?: boolean
+  showToasts?: boolean
+  enableTools?: boolean
   analytics?: boolean
   persistAfterCompaction?: boolean
   debug?: boolean
@@ -29,6 +31,10 @@ export type Logger = (
   message: string,
   extra?: Record<string, unknown>
 ) => void
+
+export type ToastVariant = "info" | "success" | "warning" | "error"
+
+export type ToastFn = (message: string, variant?: ToastVariant) => void
 
 export interface LoadSkillsResult {
   skills: ParsedSkill[]
@@ -67,6 +73,7 @@ export interface PluginContext {
   readonly config: PreloadSkillsConfig
   readonly projectDir: string
   readonly log: Logger
+  readonly toast: ToastFn
   readonly sessionManager: SessionManager
   readonly skillResolver: SkillResolver
   readonly initialSkills: ParsedSkill[]
