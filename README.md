@@ -23,10 +23,11 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | **Conditional Loading** | Load only if dependency exists |
 | **Token Budget** | Cap total skill tokens to protect context |
 | **Summaries Mode** | Load compact summaries instead of full content |
+| **Content Minification** | Minify skill content before injection to save tokens |
 | **System Prompt Injection** | Inject skills into system prompt instead of messages |
 | **Usage Analytics** | Track which skills are actually used |
 
-> **⚠️ Warning:** Preloaded skills consume context window tokens. Use `maxTokens` to set a budget and `useSummaries` for large skills.
+> **⚠️ Warning:** Preloaded skills consume context window tokens. Use `maxTokens` to set a budget, `useSummaries` for large skills, or `useMinification` to reduce token usage.
 
 ---
 
@@ -94,6 +95,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
   "injectionMethod": "systemPrompt",
   "maxTokens": 10000,
   "useSummaries": false,
+  "useMinification": false,
   "analytics": false,
   "persistAfterCompaction": true,
   "debug": false
@@ -115,6 +117,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `injectionMethod` | `"chatMessage" \| "systemPrompt"` | `"systemPrompt"` | Where to inject skills |
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
 | `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
+| `useMinification` | `boolean` | `false` | Minify skill content before injection |
 | `analytics` | `boolean` | `false` | Track skill usage |
 | `persistAfterCompaction` | `boolean` | `true` | Keep skills after compaction |
 | `debug` | `boolean` | `false` | Enable debug logs |
@@ -260,6 +263,26 @@ Enable with:
 
 If no `summary` field, auto-generates from first paragraph.
 
+### Content Minification
+
+Reduce token usage by minifying skill content before injection:
+
+```json
+{
+  "useMinification": true
+}
+```
+
+When enabled, the following transformations are applied:
+- HTML/markdown comments (`<!-- ... -->`) are removed
+- Frontmatter is stripped (already parsed separately)
+- 3+ consecutive blank lines are collapsed to a single paragraph break
+- Runs of spaces/tabs are collapsed to a single space
+- Trailing whitespace is trimmed from each line
+- Leading/trailing blank lines are removed
+
+Works with both `systemPrompt` and `chatMessage` injection methods, and can be combined with `useSummaries` — summaries are also minified when both are enabled.
+
 ### Per-Skill Settings
 
 Override global settings for specific skills:
@@ -382,6 +405,7 @@ Full instructions here...
 3. **Use `groups`** — Organize related skills
 4. **Enable `analytics`** — Find unused skills
 5. **Write `summary` fields** — For large skills, enable `useSummaries`
+6. **Enable `useMinification`** — Strip unnecessary whitespace and comments to save tokens
 
 ---
 
@@ -391,7 +415,7 @@ Full instructions here...
 |---------|----------|
 | Skills not loading | Check config path, skill file exists, frontmatter valid |
 | Wrong skills loading | Check trigger conditions, enable `debug: true` |
-| Context too small | Reduce skills, set `maxTokens`, enable `useSummaries` |
+| Context too small | Reduce skills, set `maxTokens`, enable `useSummaries` or `useMinification` |
 | Skills lost after compaction | Ensure `persistAfterCompaction: true` |
 
 ---
