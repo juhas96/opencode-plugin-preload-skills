@@ -22,6 +22,7 @@ export const DEFAULT_CONFIG: PreloadSkillsConfig = {
   injectionMethod: "systemPrompt",
   maxTokens: undefined,
   useSummaries: false,
+  useMinification: false,
   analytics: false,
   persistAfterCompaction: true,
   debug: false,
@@ -110,6 +111,9 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
     }
     if (typeof parsed.useSummaries === "boolean") {
       config.useSummaries = parsed.useSummaries
+    }
+    if (typeof parsed.useMinification === "boolean") {
+      config.useMinification = parsed.useMinification
     }
     if (typeof parsed.analytics === "boolean") {
       config.analytics = parsed.analytics

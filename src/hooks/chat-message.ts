@@ -70,6 +70,7 @@ export function createChatMessageHook(ctx: PluginContext) {
       if (pending && pending.length > 0) {
         const formatted = formatSkillsForInjection(pending, {
           useSummaries: config.useSummaries,
+          useMinification: config.useMinification,
           skillSettings: config.skillSettings,
         })
         if (formatted) {

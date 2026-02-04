@@ -44,6 +44,7 @@ export function createSystemPromptHook(ctx: PluginContext) {
     if (skillsToInject.length > 0) {
       const formatted = formatSkillsForInjection(skillsToInject, {
         useSummaries: config.useSummaries,
+        useMinification: config.useMinification,
         skillSettings: config.skillSettings,
       })
       output.system.push(formatted)

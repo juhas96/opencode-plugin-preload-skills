@@ -18,6 +18,7 @@ export interface PreloadSkillsConfig {
   injectionMethod?: InjectionMethod
   maxTokens?: number
   useSummaries?: boolean
+  useMinification?: boolean
   analytics?: boolean
   persistAfterCompaction?: boolean
   debug?: boolean

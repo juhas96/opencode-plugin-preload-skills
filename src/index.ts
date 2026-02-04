@@ -4,7 +4,7 @@ import { loadConfig } from "./config/loader.js"
 import { loadSkills, formatSkillsForInjection, calculateTotalTokens } from "./skills/loader.js"
 import { SkillResolverImpl, resolveSkillGroups } from "./skills/resolver.js"
 import { SessionManagerImpl } from "./session/manager.js"
-import { createHooks } from "./hooks/index.js"
+import { createHooks } from "./hooks"
 import { checkCondition } from "./utils.js"
 
 export type { PreloadSkillsConfig, ParsedSkill }
@@ -56,6 +56,7 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
 
   const initialFormattedContent = formatSkillsForInjection(initialSkills, {
     useSummaries: config.useSummaries,
+    useMinification: config.useMinification,
     skillSettings: config.skillSettings,
   })
 

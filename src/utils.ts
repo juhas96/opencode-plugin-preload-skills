@@ -73,3 +73,14 @@ export function textContainsKeyword(text: string, keywords: string[]): boolean {
   const lowerText = text.toLowerCase()
   return keywords.some((kw) => lowerText.includes(kw.toLowerCase()))
 }
+
+export function minifyContent(text: string): string {
+  return text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "")
+}

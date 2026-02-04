@@ -29,6 +29,7 @@ export function createLifecycleHooks(ctx: PluginContext) {
 
     const formatted = formatSkillsForInjection(allLoadedSkills, {
       useSummaries: config.useSummaries,
+      useMinification: config.useMinification,
       skillSettings: config.skillSettings,
     })
 

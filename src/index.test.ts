@@ -550,6 +550,54 @@ describe("PreloadSkillsPlugin", () => {
     })
   })
 
+  describe("useMinification", () => {
+    it("minifies skill content when enabled with chatMessage injection", async () => {
+      createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\n# Title\n\n\n\nSome    spaced    content\n\n<!-- comment -->\n\nEnd")
+      createConfig({ skills: ["verbose"], useMinification: true, injectionMethod: "chatMessage" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const output = createMsgOutput("Message")
+      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+
+      expect(output.parts[0]!.text).toContain("# Title")
+      expect(output.parts[0]!.text).toContain("Some spaced content")
+      expect(output.parts[0]!.text).not.toContain("<!-- comment -->")
+    })
+
+    it("minifies skill content when enabled with systemPrompt injection", async () => {
+      createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\n# Title\n\n\n\nSome    spaced    content\n\n<!-- comment -->\n\nEnd")
+      createConfig({ skills: ["verbose"], useMinification: true, injectionMethod: "systemPrompt" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const systemOutput = { system: [] as string[] }
+      await (hooks["experimental.chat.system.transform"] as Function)(
+        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
+        systemOutput
+      )
+
+      expect(systemOutput.system[0]).toContain("# Title")
+      expect(systemOutput.system[0]).toContain("Some spaced content")
+      expect(systemOutput.system[0]).not.toContain("<!-- comment -->")
+    })
+
+    it("does not minify when disabled (default)", async () => {
+      createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\nSome    spaced    content")
+      createConfig({ skills: ["verbose"], injectionMethod: "chatMessage" })
+
+      const ctx = createMockContext()
+      const hooks = await PreloadSkillsPlugin(ctx)
+
+      const output = createMsgOutput("Message")
+      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+
+      expect(output.parts[0]!.text).toContain("Some    spaced    content")
+    })
+  })
+
   describe("analytics", () => {
     it("tracks skill usage when enabled", async () => {
       createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")

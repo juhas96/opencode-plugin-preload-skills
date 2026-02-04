@@ -276,6 +276,69 @@ ${"a".repeat(100)}`
       expect(result).not.toContain("Content A")
       expect(result).not.toContain("Content B")
     })
+
+    it("minifies content when useMinification is true", () => {
+      const skillsWithWhitespace: ParsedSkill[] = [
+        {
+          name: "verbose",
+          description: "Verbose",
+          summary: "Summary",
+          content: "---\nname: verbose\n---\n\n# Title\n\n\n\nSome    spaced    content\n\n<!-- comment -->\n\nEnd",
+          filePath: "/path/v",
+          tokenCount: 50,
+        },
+      ]
+
+      const result = formatSkillsForInjection(skillsWithWhitespace, {
+        useMinification: true,
+      })
+
+      expect(result).toContain("# Title")
+      expect(result).toContain("Some spaced content")
+      expect(result).not.toContain("<!-- comment -->")
+      expect(result).not.toContain("name: verbose")
+      expect(result).not.toMatch(/  +/)
+    })
+
+    it("does not minify when useMinification is false", () => {
+      const skillsWithWhitespace: ParsedSkill[] = [
+        {
+          name: "verbose",
+          description: "Verbose",
+          summary: "Summary",
+          content: "Some    spaced    content",
+          filePath: "/path/v",
+          tokenCount: 50,
+        },
+      ]
+
+      const result = formatSkillsForInjection(skillsWithWhitespace, {
+        useMinification: false,
+      })
+
+      expect(result).toContain("Some    spaced    content")
+    })
+
+    it("minifies summary content when both useMinification and useSummaries are true", () => {
+      const skills: ParsedSkill[] = [
+        {
+          name: "test",
+          description: "Test",
+          summary: "Brief    summary   with   spaces",
+          content: "Full content",
+          filePath: "/path/t",
+          tokenCount: 10,
+        },
+      ]
+
+      const result = formatSkillsForInjection(skills, {
+        useSummaries: true,
+        useMinification: true,
+      })
+
+      expect(result).toContain("Brief summary with spaces")
+      expect(result).not.toContain("Full content")
+    })
   })
 
   describe("calculateTotalTokens", () => {

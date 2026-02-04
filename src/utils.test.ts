@@ -8,6 +8,7 @@ import {
   checkCondition,
   extractKeywords,
   textContainsKeyword,
+  minifyContent,
 } from "./utils.js"
 
 describe("estimateTokens", () => {
@@ -199,5 +200,77 @@ describe("textContainsKeyword", () => {
   it("handles empty inputs", () => {
     expect(textContainsKeyword("", ["test"])).toBe(false)
     expect(textContainsKeyword("test", [])).toBe(false)
+  })
+})
+
+describe("minifyContent", () => {
+  it("removes HTML comments", () => {
+    expect(minifyContent("before <!-- comment --> after")).toBe("before after")
+  })
+
+  it("removes multiline HTML comments", () => {
+    const input = "before\n<!-- \nmultiline\ncomment\n-->\nafter"
+    expect(minifyContent(input)).toBe("before\n\nafter")
+  })
+
+  it("removes frontmatter", () => {
+    const input = "---\nname: test\ndescription: Test\n---\n\n# Content"
+    expect(minifyContent(input)).toBe("# Content")
+  })
+
+  it("collapses multiple blank lines to single paragraph break", () => {
+    expect(minifyContent("line1\n\n\n\nline2")).toBe("line1\n\nline2")
+  })
+
+  it("preserves single paragraph breaks", () => {
+    expect(minifyContent("line1\n\nline2")).toBe("line1\n\nline2")
+  })
+
+  it("trims trailing whitespace from lines", () => {
+    expect(minifyContent("hello   \nworld  ")).toBe("hello\nworld")
+  })
+
+  it("collapses runs of spaces within lines", () => {
+    expect(minifyContent("hello    world")).toBe("hello world")
+  })
+
+  it("removes leading and trailing blank lines", () => {
+    expect(minifyContent("\n\n\ncontent\n\n\n")).toBe("content")
+  })
+
+  it("handles empty string", () => {
+    expect(minifyContent("")).toBe("")
+  })
+
+  it("handles already minified content", () => {
+    expect(minifyContent("clean content")).toBe("clean content")
+  })
+
+  it("applies all transformations together", () => {
+    const input = `---
+name: test
+description: A skill
+---
+
+<!-- This is a comment -->
+
+# Title
+
+Some    content   here   
+
+
+Another   paragraph
+
+<!-- end -->
+`
+    const result = minifyContent(input)
+    expect(result).not.toContain("<!--")
+    expect(result).not.toContain("---")
+    expect(result).not.toContain("name: test")
+    expect(result).toContain("# Title")
+    expect(result).toContain("Some content here")
+    expect(result).toContain("Another paragraph")
+    expect(result).not.toMatch(/\n{3,}/)
+    expect(result).not.toMatch(/  +/)
   })
 })
