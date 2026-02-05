@@ -121,7 +121,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `injectionMethod` | `"chatMessage" \| "systemPrompt"` | `"systemPrompt"` | Where to inject skills |
 | `maxTokens` | `number` | `undefined` | Max tokens for all skills |
 | `useSummaries` | `boolean` | `false` | Use skill summaries (global) |
-| `useMinification` | `boolean` | `false` | Minify skill content before injection |
+| `useMinification` | `boolean \| "standard" \| "aggressive"` | `false` | Minify skill content (`true`/`"standard"` or `"aggressive"`) |
 | `showToasts` | `boolean` | `false` | Show TUI toast notifications when skills are loaded |
 | `enableTools` | `boolean` | `true` | Register `loaded_skills` tool for LLM agents |
 | `analytics` | `boolean` | `false` | Track skill usage |
@@ -279,15 +279,44 @@ Reduce token usage by minifying skill content before injection:
 }
 ```
 
-When enabled, the following transformations are applied:
-- HTML/markdown comments (`<!-- ... -->`) are removed
-- Frontmatter is stripped (already parsed separately)
-- 3+ consecutive blank lines are collapsed to a single paragraph break
-- Runs of spaces/tabs are collapsed to a single space
-- Trailing whitespace is trimmed from each line
-- Leading/trailing blank lines are removed
+**Minification levels:**
 
-Works with both `systemPrompt` and `chatMessage` injection methods, and can be combined with `useSummaries` — summaries are also minified when both are enabled.
+| Value | Description |
+|-------|-------------|
+| `true` or `"standard"` | Standard minification (safe, ~20% reduction) |
+| `"aggressive"` | Vercel-style compression (~50%+ reduction) |
+
+**Standard minification** (`true` or `"standard"`):
+- HTML/markdown comments removed
+- Frontmatter stripped
+- Multiple blank lines collapsed
+- Whitespace normalized
+
+**Aggressive minification** (`"aggressive"`):
+
+Inspired by [Vercel's AGENTS.md research](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals), this mode achieves maximum compression:
+
+```json
+{
+  "useMinification": "aggressive"
+}
+```
+
+Transformations:
+- All standard minification, plus:
+- `# Headers` → `[HEADERS]` (uppercase, bracketed)
+- `**bold**` and `*italic*` → plain text
+- Code blocks → pipe-delimited single line
+- Lists → pipe-delimited (`- item` → `|item`)
+- Links → text only (URLs removed)
+- Skills wrapped as `[SKILL:name]|content|[END]`
+
+Example output:
+```
+[SKILL:api-patterns]|[API RULES]|MANDATORY: Use REST conventions|Endpoints:|/users|/orders|[END]
+```
+
+Works with both `systemPrompt` and `chatMessage` injection methods.
 
 ### Toast Notifications
 

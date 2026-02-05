@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { homedir } from "node:os"
-import type { ParsedSkill, SkillSettings } from "../types.js"
-import { estimateTokens, minifyContent } from "../utils.js"
+import type { ParsedSkill, SkillSettings, MinificationLevel } from "../types.js"
+import { estimateTokens, minifyContent, minifyContentAggressive } from "../utils.js"
 
 const SKILL_FILENAME = "SKILL.md"
 
@@ -114,8 +114,14 @@ export function loadSkills(skillNames: string[], projectDir: string): ParsedSkil
 
 export interface FormatOptions {
   useSummaries?: boolean
-  useMinification?: boolean
+  useMinification?: boolean | MinificationLevel
   skillSettings?: Record<string, SkillSettings>
+}
+
+function applyMinification(content: string, level: boolean | MinificationLevel): string {
+  if (!level) return content
+  if (level === "aggressive") return minifyContentAggressive(content)
+  return minifyContent(content)
 }
 
 export function formatSkillsForInjection(
@@ -131,18 +137,26 @@ export function formatSkillsForInjection(
     : options
   
   const globalUseSummaries = opts.useSummaries ?? false
-  const shouldMinify = opts.useMinification ?? false
+  const minificationLevel = opts.useMinification ?? false
   const skillSettings = opts.skillSettings ?? {}
+
+  const isAggressive = minificationLevel === "aggressive"
 
   const parts = skills.map((skill) => {
     const perSkillSetting = skillSettings[skill.name]?.useSummary
     const shouldUseSummary = perSkillSetting ?? globalUseSummaries
     let content = shouldUseSummary && skill.summary ? skill.summary : skill.content
-    if (shouldMinify) {
-      content = minifyContent(content)
+    content = applyMinification(content, minificationLevel)
+    
+    if (isAggressive) {
+      return `[SKILL:${skill.name}]|${content.replace(/\n/g, "|")}`
     }
     return `<preloaded-skill name="${skill.name}">\n${content}\n</preloaded-skill>`
   })
+
+  if (isAggressive) {
+    return `[SKILLS]|${parts.join("|[END]|")}`
+  }
 
   return `<preloaded-skills>
 The following skills have been automatically loaded for this session:
