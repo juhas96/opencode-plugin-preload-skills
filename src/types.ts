@@ -6,6 +6,8 @@ export type InjectionMethod = "systemPrompt" | "chatMessage"
 
 export type TriggerType = "initial" | "fileType" | "agent" | "path" | "content" | "conditional"
 
+export type MinificationLevel = "standard" | "aggressive"
+
 export interface PreloadSkillsConfig {
   skills: string[]
   fileTypeSkills?: Record<string, string[]>
@@ -18,7 +20,7 @@ export interface PreloadSkillsConfig {
   injectionMethod?: InjectionMethod
   maxTokens?: number
   useSummaries?: boolean
-  useMinification?: boolean
+  useMinification?: boolean | MinificationLevel
   showToasts?: boolean
   enableTools?: boolean
   analytics?: boolean

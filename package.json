@@ -1,6 +1,6 @@
 {
   "name": "opencode-plugin-preload-skills",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Smart skill loading for OpenCode — automatic, contextual, and budget-aware",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -26,6 +26,14 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:injection": "vitest run evals/injection.test.ts",
+    "eval": "tsx evals/run.ts",
+    "eval:quick": "tsx evals/run.ts --retries 1 --configs 'baseline,systemPrompt (full)'",
+    "eval:full": "tsx evals/run.ts --output evals/report.md",
+    "eval:advanced": "tsx evals/run.ts --advanced --retries 5",
+    "eval:hard": "tsx evals/run.ts --advanced --filter hard --retries 5",
+    "eval:variance": "tsx evals/run.ts --retries 10 --output evals/variance-report.md",
+    "eval:complete": "tsx evals/run.ts --advanced --retries 5 --output evals/complete-report.md",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc --noEmit"
   },
@@ -58,6 +66,7 @@
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "tsup": "^8.0.0",
+    "tsx": "^4.7.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
   }

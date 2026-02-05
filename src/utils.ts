@@ -84,3 +84,45 @@ export function minifyContent(text: string): string {
     .replace(/^\n+/, "")
     .replace(/\n+$/, "")
 }
+
+export function minifyContentAggressive(text: string): string {
+  let result = text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "")
+
+  result = result.replace(/^(#{1,6})\s+(.+)$/gm, (_, _hashes, title) => `[${title.toUpperCase()}]`)
+
+  result = result.replace(/\*\*([^*]+)\*\*/g, "$1")
+  result = result.replace(/\*([^*]+)\*/g, "$1")
+  result = result.replace(/__([^_]+)__/g, "$1")
+  result = result.replace(/(?<=\s|^)_([^_\s]+)_(?=\s|$|[.,;:!?])/gm, "$1")
+
+  result = result.replace(/```\w*\n([\s\S]*?)```/g, (_, code) => {
+    return code
+      .split("\n")
+      .map((line: string) => line.trim())
+      .filter((line: string) => line.length > 0)
+      .join("|")
+  })
+
+  result = result.replace(/^[-*+]\s+(.+)$/gm, "|$1")
+  result = result.replace(/^\d+\.\s+(.+)$/gm, "|$1")
+
+  result = result.replace(/(\|\S[^|]*)\n(\|)/g, "$1$2")
+
+  result = result.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+
+  result = result
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "")
+
+  result = result.replace(
+    /\b(MANDATORY|FORBIDDEN|CRITICAL|NEVER|ALWAYS|MUST|REQUIRED)\b/g,
+    ">>>$1<<<"
+  )
+
+  return result
+}

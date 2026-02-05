@@ -9,6 +9,7 @@ import {
   extractKeywords,
   textContainsKeyword,
   minifyContent,
+  minifyContentAggressive,
 } from "./utils.js"
 
 describe("estimateTokens", () => {
@@ -272,5 +273,108 @@ Another   paragraph
     expect(result).toContain("Another paragraph")
     expect(result).not.toMatch(/\n{3,}/)
     expect(result).not.toMatch(/  +/)
+  })
+})
+
+describe("minifyContentAggressive", () => {
+  it("converts markdown headers to bracketed uppercase", () => {
+    expect(minifyContentAggressive("# Title")).toBe("[TITLE]")
+    expect(minifyContentAggressive("## Section")).toBe("[SECTION]")
+    expect(minifyContentAggressive("### Subsection")).toBe("[SUBSECTION]")
+  })
+
+  it("strips bold and italic markers", () => {
+    expect(minifyContentAggressive("**bold**")).toBe("bold")
+    expect(minifyContentAggressive("*italic*")).toBe("italic")
+    expect(minifyContentAggressive("__bold__")).toBe("bold")
+    expect(minifyContentAggressive("_italic_")).toBe("italic")
+  })
+
+  it("converts code blocks to pipe-delimited", () => {
+    const input = "```typescript\nconst x = 1\nconst y = 2\n```"
+    expect(minifyContentAggressive(input)).toBe("const x = 1|const y = 2")
+  })
+
+  it("converts lists to pipe-delimited", () => {
+    const input = "- item1\n- item2\n- item3"
+    const result = minifyContentAggressive(input)
+    expect(result).toContain("|item1")
+    expect(result).toContain("|item2")
+    expect(result).toContain("|item3")
+  })
+
+  it("converts numbered lists to pipe-delimited", () => {
+    const input = "1. first\n2. second"
+    const result = minifyContentAggressive(input)
+    expect(result).toContain("|first")
+    expect(result).toContain("|second")
+  })
+
+  it("strips link URLs but keeps text", () => {
+    expect(minifyContentAggressive("[click here](https://example.com)")).toBe("click here")
+  })
+
+  it("removes frontmatter", () => {
+    const input = "---\nname: test\n---\n\ncontent"
+    expect(minifyContentAggressive(input)).toBe("content")
+  })
+
+  it("achieves significant size reduction", () => {
+    const input = `---
+name: test-skill
+description: A test skill
+---
+
+# Main Title
+
+This is **bold** and *italic* text.
+
+## Code Example
+
+\`\`\`typescript
+async function fetchData(url: string): Promise<Data> {
+  const response = await fetch(url)
+  return response.json()
+}
+\`\`\`
+
+## Rules
+
+- Rule one here
+- Rule two here
+- Rule three here
+
+[Learn more](https://example.com)`
+
+    const result = minifyContentAggressive(input)
+    const reduction = ((input.length - result.length) / input.length) * 100
+
+    expect(reduction).toBeGreaterThan(25)
+    expect(result).toContain("[MAIN TITLE]")
+    expect(result).toContain("bold")
+    expect(result).not.toContain("**")
+    expect(result).not.toContain("```")
+    expect(result).toContain("|")
+  })
+
+  it("wraps emphasis keywords with markers", () => {
+    expect(minifyContentAggressive("MANDATORY: do this")).toBe(">>>MANDATORY<<<: do this")
+    expect(minifyContentAggressive("FORBIDDEN: never do")).toBe(">>>FORBIDDEN<<<: never do")
+    expect(minifyContentAggressive("CRITICAL rule")).toBe(">>>CRITICAL<<< rule")
+    expect(minifyContentAggressive("NEVER use any")).toBe(">>>NEVER<<< use any")
+    expect(minifyContentAggressive("ALWAYS check")).toBe(">>>ALWAYS<<< check")
+    expect(minifyContentAggressive("MUST follow")).toBe(">>>MUST<<< follow")
+    expect(minifyContentAggressive("REQUIRED field")).toBe(">>>REQUIRED<<< field")
+  })
+
+  it("preserves underscores in snake_case identifiers", () => {
+    expect(minifyContentAggressive("use_snake_case")).toBe("use_snake_case")
+    expect(minifyContentAggressive("my_var_name")).toBe("my_var_name")
+    expect(minifyContentAggressive("def my_function():")).toBe("def my_function():")
+  })
+
+  it("removes markdown italic underscores when surrounded by whitespace", () => {
+    expect(minifyContentAggressive("this is _italic_ text")).toBe("this is italic text")
+    expect(minifyContentAggressive("_start_ of line")).toBe("start of line")
   })
 })
