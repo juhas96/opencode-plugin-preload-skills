@@ -10,6 +10,29 @@ import type {
 
 const CONFIG_FILENAME = "preload-skills.json"
 
+/**
+ * Default value for `triggerIgnoreTags`.
+ *
+ * These are well-known XML block tag names used by common OpenCode context /
+ * memory plugins (e.g. `@cortexkit/opencode-magic-context`, OMO historian)
+ * when injecting historical summaries, project memory, or user profile content
+ * into a user's chat message. Stripping these blocks before `contentTriggers`
+ * keyword matching prevents false skill-load fires when injected text happens
+ * to contain a trigger keyword.
+ *
+ * Users can override this list via the `triggerIgnoreTags` config field.
+ * Set to `[]` to disable stripping entirely.
+ */
+export const DEFAULT_TRIGGER_IGNORE_TAGS: string[] = [
+  "session-history",
+  "session-history-since",
+  "compartment_examples_from_other_projects",
+  "compartment",
+  "project-memory",
+  "user-profile",
+  "draft",
+]
+
 export const DEFAULT_CONFIG: PreloadSkillsConfig = {
   skills: [],
   fileTypeSkills: {},
@@ -19,6 +42,7 @@ export const DEFAULT_CONFIG: PreloadSkillsConfig = {
   groups: {},
   conditionalSkills: [],
   skillSettings: {},
+  triggerIgnoreTags: DEFAULT_TRIGGER_IGNORE_TAGS,
   injectionMethod: "systemPrompt",
   maxTokens: undefined,
   useSummaries: false,
@@ -43,6 +67,11 @@ function findConfigFile(projectDir: string): string | null {
     }
   }
   return null
+}
+
+function parseStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((v): v is string => typeof v === "string" && v.length > 0)
 }
 
 function parseStringArrayRecord(raw: unknown): Record<string, string[]> {
@@ -106,6 +135,12 @@ function loadConfigFile(projectDir: string): Partial<PreloadSkillsConfig> {
       groups: parseStringArrayRecord(parsed.groups),
       conditionalSkills: parseConditionalSkills(parsed.conditionalSkills),
       skillSettings: parseSkillSettings(parsed.skillSettings),
+    }
+
+    // triggerIgnoreTags: user override replaces defaults entirely (matches
+    // the override semantics of every other config field in this file).
+    if (Array.isArray(parsed.triggerIgnoreTags)) {
+      config.triggerIgnoreTags = parseStringArray(parsed.triggerIgnoreTags)
     }
 
     if (typeof parsed.maxTokens === "number") {

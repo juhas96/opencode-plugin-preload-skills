@@ -1,7 +1,7 @@
 import type { UserMessage, Part } from "@opencode-ai/sdk"
 import type { PluginContext } from "../types.js"
 import { formatSkillsForInjection } from "../skills/loader.js"
-import { textContainsKeyword } from "../utils.js"
+import { textContainsKeyword, stripIgnoredTags } from "../utils.js"
 
 interface ChatMessageInput {
   sessionID: string
@@ -24,7 +24,15 @@ export function createChatMessageHook(ctx: PluginContext) {
     const firstTextPart = output.parts.find((p) => p.type === "text")
     if (!firstTextPart || !("text" in firstTextPart)) return
 
-    const messageText = firstTextPart.text
+    // Strip plugin-injected context blocks (e.g. <session-history>,
+    // <project-memory>) before keyword matching. This prevents false triggers
+    // when injected historical summaries happen to contain a contentTrigger
+    // keyword (e.g. "cover image", "rebase fixup") that the user never typed.
+    // Tag names are configurable via `triggerIgnoreTags`; see DEFAULT_TRIGGER_IGNORE_TAGS.
+    const messageText = stripIgnoredTags(
+      firstTextPart.text,
+      config.triggerIgnoreTags ?? []
+    )
 
     if (input.agent && config.agentSkills?.[input.agent]) {
       const result = skillResolver.loadWithBudget(

@@ -17,6 +17,20 @@ export interface PreloadSkillsConfig {
   groups?: Record<string, string[]>
   conditionalSkills?: ConditionalSkill[]
   skillSettings?: Record<string, SkillSettings>
+  /**
+   * XML tag names whose entire `<tag>...</tag>` blocks should be stripped from
+   * the message text before running `contentTriggers` keyword matching.
+   *
+   * This prevents false triggers caused by other plugins (e.g. context/memory
+   * plugins) that inject historical summaries, project memory, or user profile
+   * blocks into the user's message text. Such injected blocks may happen to
+   * contain `contentTriggers` keywords (e.g. "cover image", "rebase fixup")
+   * even though the user did not type them.
+   *
+   * Default: see `DEFAULT_TRIGGER_IGNORE_TAGS` in `config/loader.ts`.
+   * Set to `[]` to disable stripping entirely.
+   */
+  triggerIgnoreTags?: string[]
   injectionMethod?: InjectionMethod
   maxTokens?: number
   useSummaries?: boolean
