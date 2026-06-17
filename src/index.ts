@@ -9,6 +9,10 @@ import { checkCondition } from "./utils.js"
 
 export type { PreloadSkillsConfig, ParsedSkill }
 export { loadSkills, formatSkillsForInjection }
+// Exposed so programmatic consumers can extend (rather than retype) the default
+// ignore-tag list, e.g. `[...DEFAULT_TRIGGER_IGNORE_TAGS, "my-plugin-context"]`.
+export { DEFAULT_TRIGGER_IGNORE_TAGS } from "./config/loader.js"
+export { stripIgnoredTags } from "./utils.js"
 
 function resolveConditionalSkills(config: PreloadSkillsConfig, projectDir: string): string[] {
   if (!config.conditionalSkills?.length) return []

@@ -82,6 +82,15 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
     "database": ["sql-patterns"],
     "authentication": ["auth-security"]
   },
+  "triggerIgnoreTags": [
+    "session-history",
+    "session-history-since",
+    "compartment_examples_from_other_projects",
+    "compartment",
+    "project-memory",
+    "user-profile",
+    "draft"
+  ],
   "groups": {
     "frontend": ["react", "css", "testing"],
     "backend": ["api-design", "database"]
@@ -115,6 +124,7 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 | `agentSkills` | `Record<string, string[]>` | `{}` | Map agent names to skills |
 | `pathPatterns` | `Record<string, string[]>` | `{}` | Map glob patterns to skills |
 | `contentTriggers` | `Record<string, string[]>` | `{}` | Map keywords to skills |
+| `triggerIgnoreTags` | `string[]` | see [Trigger Ignore Tags](#trigger-ignore-tags) | XML tag names to strip before `contentTriggers` matching |
 | `groups` | `Record<string, string[]>` | `{}` | Define skill bundles |
 | `conditionalSkills` | `ConditionalSkill[]` | `[]` | Load if condition met |
 | `skillSettings` | `Record<string, SkillSettings>` | `{}` | Per-skill settings |
@@ -189,6 +199,60 @@ Load skills when keywords appear in conversation:
   }
 }
 ```
+
+> **Note:** Keywords are matched using case-insensitive substring matching against the full message text. If you use a context-injection plugin (e.g. one that prepends `<session-history>` summaries or `<project-memory>` blocks to each user message), those injected blocks are also scanned — which can cause false triggers when an injected historical summary happens to contain one of your keywords. See [Trigger Ignore Tags](#trigger-ignore-tags) below for how to prevent this.
+
+### Trigger Ignore Tags
+
+Strip plugin-injected XML blocks from message text **before** `contentTriggers` keyword matching, so that keywords appearing only inside injected context (historical summaries, project memory, user profile) do not false-fire skill loads.
+
+**Default value** (covers the most common context-injection plugins):
+
+```json
+{
+  "triggerIgnoreTags": [
+    "session-history",
+    "session-history-since",
+    "compartment_examples_from_other_projects",
+    "compartment",
+    "project-memory",
+    "user-profile",
+    "draft"
+  ]
+}
+```
+
+Each entry names an XML tag. For tag `foo`, the entire block `<foo ...>...</foo>` (including any attributes on the opening tag and all nested content, matched non-greedily) is removed from the message text before any `contentTriggers` keyword is tested.
+
+**Common use cases:**
+
+- **Keep defaults (recommended):** most users get correct behavior with no extra config. The defaults cover `@cortexkit/opencode-magic-context` and similar context plugins.
+- **Extend defaults:** add your own tags on top of the defaults by listing them all (the user list replaces the default entirely):
+
+```json
+{
+  "triggerIgnoreTags": [
+    "session-history",
+    "session-history-since",
+    "compartment_examples_from_other_projects",
+    "compartment",
+    "project-memory",
+    "user-profile",
+    "draft",
+    "my-custom-plugin-context"
+  ]
+}
+```
+
+- **Disable stripping entirely** (restore pre-1.9.0 behavior):
+
+```json
+{
+  "triggerIgnoreTags": []
+}
+```
+
+Tag names are treated literally (RegExp-escaped internally), so even unusual names like `compartment_examples_from_other_projects` are safe.
 
 ### Skill Groups
 

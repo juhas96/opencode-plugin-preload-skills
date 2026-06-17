@@ -74,6 +74,44 @@ export function textContainsKeyword(text: string, keywords: string[]): boolean {
   return keywords.some((kw) => lowerText.includes(kw.toLowerCase()))
 }
 
+/**
+ * Escapes RegExp special characters in a string so it can be safely embedded
+ * inside a `new RegExp(...)` pattern.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Strips `<tag>...</tag>` blocks (including optional attributes on the opening
+ * tag) from `text` for every tag name in `tags`.
+ *
+ * Used by the `chat.message` hook to remove plugin-injected context blocks
+ * (e.g. `<session-history>`, `<project-memory>`) before running
+ * `contentTriggers` keyword matching, so that keywords appearing only inside
+ * injected summaries do not false-fire skill loads.
+ *
+ * - Non-greedy matching ensures only up-to-the-first-closing-tag content is
+ *   stripped, even when multiple blocks of the same tag appear.
+ * - Tag names are RegExp-escaped, so arbitrary user config values are safe.
+ * - Returns the original text unchanged when `tags` is empty.
+ */
+export function stripIgnoredTags(text: string, tags: string[]): string {
+  if (!tags || tags.length === 0) return text
+
+  let result = text
+  for (const tag of tags) {
+    if (typeof tag !== "string" || tag.length === 0) continue
+    const escaped = escapeRegex(tag)
+    const pattern = new RegExp(
+      `<${escaped}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${escaped}>`,
+      "g"
+    )
+    result = result.replace(pattern, "")
+  }
+  return result
+}
+
 export function minifyContent(text: string): string {
   return text
     .replace(/<!--[\s\S]*?-->/g, "")

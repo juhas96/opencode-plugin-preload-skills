@@ -8,6 +8,7 @@ import {
   checkCondition,
   extractKeywords,
   textContainsKeyword,
+  stripIgnoredTags,
   minifyContent,
   minifyContentAggressive,
 } from "./utils.js"
@@ -201,6 +202,97 @@ describe("textContainsKeyword", () => {
   it("handles empty inputs", () => {
     expect(textContainsKeyword("", ["test"])).toBe(false)
     expect(textContainsKeyword("test", [])).toBe(false)
+  })
+})
+
+describe("stripIgnoredTags", () => {
+  it("returns original text when tags list is empty", () => {
+    const text = "hello <session-history>world</session-history> end"
+    expect(stripIgnoredTags(text, [])).toBe(text)
+  })
+
+  it("returns original text unchanged when no match", () => {
+    const text = "just plain text"
+    expect(stripIgnoredTags(text, ["session-history"])).toBe(text)
+  })
+
+  it("strips a single matching tag block", () => {
+    const text = "before <session-history>injected content</session-history> after"
+    expect(stripIgnoredTags(text, ["session-history"])).toBe("before  after")
+  })
+
+  it("strips multiline tag block content", () => {
+    const text = "start\n<session-history>\nline1\nline2\n</session-history>\nend"
+    expect(stripIgnoredTags(text, ["session-history"])).toBe("start\n\nend")
+  })
+
+  it("strips tag block with attributes on opening tag", () => {
+    const text = '<w x=\"1\">inner</w> tail'
+    expect(stripIgnoredTags(text, ["w"])).toBe(" tail")
+  })
+
+  it("strips only the innermost block when nested (non-greedy)", () => {
+    // Non-greedy matching: the first `</outer>` closes the block.
+    const text = "<outer>a<outer>b</outer>c</outer> tail"
+    const result = stripIgnoredTags(text, ["outer"])
+    // First pass strips `<outer>a<outer>b</outer>` leaving `c</outer> tail`;
+    // there is no second `<outer>...</outer>` pair (orphan close tag remains).
+    expect(result).not.toContain("<outer>")
+    expect(result).toContain("tail")
+  })
+
+  it("strips multiple different tag blocks in one pass", () => {
+    const text =
+      "<session-history>hist</session-history>" +
+      "<project-memory>mem</project-memory>" +
+      "real"
+    expect(stripIgnoredTags(text, ["session-history", "project-memory"])).toBe("real")
+  })
+
+  it("strips multiple occurrences of same tag", () => {
+    const text =
+      "<draft>a</draft>mid<draft>b</draft>end"
+    expect(stripIgnoredTags(text, ["draft"])).toBe("midend")
+  })
+
+  it("preserves content outside tag blocks", () => {
+    const text =
+      "user typed this <session-history>noise</session-history> and more"
+    const result = stripIgnoredTags(text, ["session-history"])
+    expect(result).toContain("user typed this")
+    expect(result).toContain("and more")
+    expect(result).not.toContain("noise")
+  })
+
+  it("escapes regex special chars in tag names (no injection)", () => {
+    // A malicious / careless tag name should not break matching or match
+    // unexpected content. `.*` as a tag name should NOT match `<abc>`.
+    const text = "<abc>val</abc> tail"
+    expect(stripIgnoredTags(text, [".*"])).toBe(text)
+  })
+
+  it("handles tag names containing regex metacharacters literally", () => {
+    // Underscore-heavy tag names used by real plugins should match literally.
+    const text =
+      "<compartment_examples_from_other_projects>x</compartment_examples_from_other_projects> end"
+    expect(stripIgnoredTags(text, ["compartment_examples_from_other_projects"])).toBe(" end")
+  })
+
+  it("skips non-string entries in tags array", () => {
+    const text = "<session-history>x</session-history> real"
+    // @ts-expect-error -- runtime safety against bad config input
+    expect(stripIgnoredTags(text, ["session-history", 123, null, undefined])).toBe(" real")
+  })
+
+  it("handles case where closing tag is missing (no strip)", () => {
+    const text = "<session-history>content without close"
+    // No closing tag → regex does not match → text unchanged.
+    expect(stripIgnoredTags(text, ["session-history"])).toBe(text)
+  })
+
+  it("does not strip when only closing tag is present", () => {
+    const text = "content with stray </session-history> end"
+    expect(stripIgnoredTags(text, ["session-history"])).toBe(text)
   })
 })
 
