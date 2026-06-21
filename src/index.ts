@@ -123,4 +123,25 @@ export const PreloadSkillsPlugin: Plugin = async (ctx: PluginInput) => {
   return createHooks(pluginContext)
 }
 
-export default PreloadSkillsPlugin
+// opencode's plugin loader (v1.x) prefers a `PluginModule` default export
+// (`{ id, server }`). When the default is a raw function instead, the loader
+// falls back to iterating EVERY named export and requires each to be a
+// function — which trips on non-function exports like
+// `DEFAULT_TRIGGER_IGNORE_TAGS` (an array), producing:
+//   "Plugin export is not a function"
+// Exporting a module object keeps the named exports intact for programmatic
+// consumers while satisfying the modern loader path.
+//
+// Defined structurally (rather than importing `PluginModule` from
+// `@opencode-ai/plugin`) so this compiles against older SDK type packages
+// that predate the `PluginModule` export, while still satisfying the
+// current opencode runtime contract.
+const pluginModule: {
+  id?: string
+  server: Plugin
+} = {
+  id: "preload-skills",
+  server: PreloadSkillsPlugin,
+}
+
+export default pluginModule
