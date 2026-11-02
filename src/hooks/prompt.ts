@@ -2,14 +2,38 @@ import type { SessionPrompt } from "@opencode/plugin/promise/session"
 import type { PluginContext } from "../types.js"
 import { textContainsKeyword, stripIgnoredTags } from "../utils.js"
 
+export function extractPromptText(prompt: unknown): string | null {
+  if (!prompt || typeof prompt !== "object") return null
+  const p = prompt as { text?: unknown; parts?: unknown }
+  if (typeof p.text === "string" && p.text.trim().length > 0) {
+    return p.text
+  }
+  if (Array.isArray(p.parts)) {
+    const textParts = p.parts
+      .filter((part): part is { type: "text"; text: string } => {
+        return (
+          part != null &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "text" &&
+          typeof (part as { text?: unknown }).text === "string"
+        )
+      })
+      .map((part) => part.text)
+    if (textParts.length > 0) {
+      return textParts.join(" ")
+    }
+  }
+  return null
+}
+
 export function createPromptHook(ctx: PluginContext) {
   const { config, sessionManager, skillResolver } = ctx
 
   return async (event: SessionPrompt): Promise<void> => {
     if (!event.sessionID) return
 
-    const rawText = event.prompt?.text
-    if (!rawText || typeof rawText !== "string") return
+    const rawText = extractPromptText(event.prompt)
+    if (!rawText) return
 
     // Strip plugin-injected context blocks (e.g. <session-history>,
     // <project-memory>) before keyword matching. This prevents false triggers

@@ -54,6 +54,11 @@
   "peerDependencies": {
     "@opencode/plugin": ">=2.0.0 <3.0.0"
   },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@opencode/plugin": "^2.1.4",
     "@types/node": "^22.0.0",

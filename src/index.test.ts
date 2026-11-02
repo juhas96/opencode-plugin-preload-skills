@@ -826,6 +826,238 @@ describe("PreloadSkillsPlugin V2", () => {
     })
   })
 
+  describe("hybrid exports & V1 adapter", () => {
+    it("exports id, setup (V2), and server (V1) on default export", () => {
+      expect(plugin).toHaveProperty("id", "preload-skills")
+      expect(plugin).toHaveProperty("setup")
+      expect(typeof plugin.setup).toBe("function")
+      expect(plugin).toHaveProperty("server")
+      expect(typeof plugin.server).toBe("function")
+    })
+
+    it("supports prompt with parts array in V2 prompt hook", async () => {
+      createSkill("part-skill", "---\nname: part-skill\ndescription: Part\n---\nPart Content")
+      createConfig({ contentTriggers: { triggerword: ["part-skill"] } })
+
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
+
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          parts: [
+            { type: "text", text: "hello world" },
+            { type: "other", text: "ignored" },
+            { type: "text", text: "this contains triggerword here" },
+          ],
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(1)
+      expect(contextEvent.system[0].text).toContain("Part Content")
+      if (typeof cleanup === "function") cleanup()
+    })
+
+    it("supports prompt with text: '' but valid parts", async () => {
+      createSkill("part-skill", "---\nname: part-skill\ndescription: Part\n---\nPart Content")
+      createConfig({ contentTriggers: { triggerword: ["part-skill"] } })
+
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
+
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          text: "",
+          parts: [
+            { type: "text", text: "this contains triggerword here" },
+          ],
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(1)
+      expect(contextEvent.system[0].text).toContain("Part Content")
+      if (typeof cleanup === "function") cleanup()
+    })
+
+    it("initializes V1 server adapter and handles experimental.chat.system.transform, tool.execute.after, and compaction", async () => {
+      createSkill("v1-initial", "---\nname: v1-initial\ndescription: V1 Initial\n---\nInitial V1 Skill")
+      createSkill("v1-file", "---\nname: v1-file\ndescription: V1 File\n---\nFile V1 Skill")
+      createSkill("v1-content", "---\nname: v1-content\ndescription: V1 Content\n---\nContent V1 Skill")
+      createConfig({
+        skills: ["v1-initial"],
+        fileTypeSkills: { ".ts": ["v1-file"] },
+        contentTriggers: { "v1trigger": ["v1-content"] },
+        persistAfterCompaction: true,
+      })
+
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: vi.fn(),
+          },
+        },
+      }
+
+      const hooks = await plugin.server(v1Ctx)
+      expect(hooks).toHaveProperty("experimental.chat.system.transform")
+      expect(hooks).toHaveProperty("chat.message")
+      expect(hooks).toHaveProperty("tool.execute.after")
+      expect(hooks).toHaveProperty("experimental.session.compacting")
+      expect(hooks).toHaveProperty("event")
+      expect(hooks).toHaveProperty("tool")
+      expect(hooks).toHaveProperty("dispose")
+
+      // 1. experimental.chat.system.transform test
+      const chatTransform = hooks["experimental.chat.system.transform"] as Function
+      const paramsOutput: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "v1-session", agent: "build" }, paramsOutput)
+
+      expect(paramsOutput.system).toHaveLength(1)
+      expect(typeof paramsOutput.system[0]).toBe("string")
+      expect(paramsOutput.system[0]).toContain("Initial V1 Skill")
+
+      // 2. chat.message test with output.parts
+      const chatMessage = hooks["chat.message"] as Function
+      await chatMessage(
+        { sessionID: "v1-session", agent: "build" },
+        { parts: [{ type: "text", text: "triggering with v1trigger here" }] }
+      )
+
+      // 3. tool.execute.after test with input.args
+      const toolExec = hooks["tool.execute.after"] as Function
+      await toolExec(
+        { tool: "read", sessionID: "v1-session", args: { filePath: "src/main.ts" } },
+        {}
+      )
+
+      // Next system transform should inject the triggered skills
+      const paramsOutput2: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "v1-session", agent: "build" }, paramsOutput2)
+      expect(paramsOutput2.system[0]).toContain("File V1 Skill")
+      expect(paramsOutput2.system[0]).toContain("Content V1 Skill")
+
+      // 4. experimental.session.compacting test
+      const compactingHook = hooks["experimental.session.compacting"] as Function
+      const compactOutput: { context: string[] } = { context: [] }
+      await compactingHook({ sessionID: "v1-session" }, compactOutput)
+      expect(compactOutput.context).toHaveLength(1)
+      expect(typeof compactOutput.context[0]).toBe("string")
+      expect(compactOutput.context[0]).toContain("## Preloaded Skills")
+      expect(compactOutput.context[0]).toContain("Initial V1 Skill")
+
+      // 5. V1 tool test
+      const toolsObj = hooks.tool as Record<string, any>
+      expect(toolsObj.loaded_skills).toBeDefined()
+      const toolResult = await toolsObj.loaded_skills.execute({}, { sessionID: "v1-session" })
+      expect(typeof toolResult).toBe("string")
+      expect(toolResult).toContain("v1-initial")
+      expect(toolResult).toContain("v1-file")
+      expect(toolResult).toContain("v1-content")
+
+      // 6. V1 session.deleted event test with properties.sessionID
+      const eventHook = hooks.event as Function
+      await eventHook({ event: { type: "session.deleted", properties: { sessionID: "v1-session" } } })
+      const postCleanupToolResult = await toolsObj.loaded_skills.execute({}, { sessionID: "v1-session" })
+      // v1-file and v1-content should be cleaned up; a new session state only initializes with initial skills (v1-initial)
+      expect(postCleanupToolResult).toContain("v1-initial")
+      expect(postCleanupToolResult).not.toContain("v1-file")
+      expect(postCleanupToolResult).not.toContain("v1-content")
+
+      // 7. Dispose test
+      const disposeFn = hooks.dispose as Function
+      expect(typeof disposeFn).toBe("function")
+      disposeFn()
+    })
+
+    it("supports injectionMethod: 'chatMessage' in V1 adapter", async () => {
+      createSkill("chat-skill", "---\nname: chat-skill\ndescription: Chat Skill\n---\nChat Skill Content")
+      createSkill("triggered-chat-skill", "---\nname: triggered-chat-skill\ndescription: Triggered\n---\nTriggered Content")
+      createConfig({
+        skills: ["chat-skill"],
+        contentTriggers: { "findme": ["triggered-chat-skill"] },
+        injectionMethod: "chatMessage",
+      })
+
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: vi.fn(),
+          },
+        },
+      }
+
+      const hooks = await plugin.server(v1Ctx)
+      // When injectionMethod is chatMessage, experimental.chat.system.transform should NOT be registered
+      expect(hooks).not.toHaveProperty("experimental.chat.system.transform")
+      expect(hooks).toHaveProperty("chat.message")
+
+      const chatMessage = hooks["chat.message"] as Function
+
+      // Initial chat message injection
+      const output1: { parts: Array<{ type: string; text: string }> } = {
+        parts: [{ type: "text", text: "Hello AI" }],
+      }
+      await chatMessage({ sessionID: "chat-v1-session", agent: "build" }, output1)
+
+      expect(output1.parts.length).toBeGreaterThan(1)
+      const injectedPart = output1.parts.find((p) => p.text.includes("Chat Skill Content"))
+      expect(injectedPart).toBeDefined()
+
+      // Subsequent message with trigger keyword
+      const output2: { parts: Array<{ type: string; text: string }> } = {
+        parts: [{ type: "text", text: "Please findme some answers" }],
+      }
+      await chatMessage({ sessionID: "chat-v1-session", agent: "build" }, output2)
+
+      const triggeredPart = output2.parts.find((p) => p.text.includes("Triggered Content"))
+      expect(triggeredPart).toBeDefined()
+    })
+
+    it("honors showToasts: false in V1 adapter", async () => {
+      createSkill("toast-skill", "---\nname: toast-skill\ndescription: Toast\n---\nToast Content")
+      createConfig({
+        skills: ["toast-skill"],
+        showToasts: false,
+      })
+
+      const showToastMock = vi.fn()
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: showToastMock,
+          },
+        },
+      }
+
+      const hooks = await plugin.server(v1Ctx)
+      const chatTransform = hooks["experimental.chat.system.transform"] as Function
+      const paramsOutput: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "toast-session", agent: "build" }, paramsOutput)
+
+      expect(showToastMock).not.toHaveBeenCalled()
+    })
+  })
+
   describe("multiple file extension support", () => {
     it("supports comma-separated extensions", async () => {
       createSkill("jsx-skill", "---\nname: jsx-skill\ndescription: JSX\n---\nJSX Content")

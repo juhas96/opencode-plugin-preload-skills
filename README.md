@@ -37,6 +37,14 @@ A powerful plugin for [OpenCode](https://opencode.ai) that intelligently loads s
 
 **1. Add to `opencode.json`:**
 
+**OpenCode V2:**
+```json
+{
+  "plugins": ["opencode-plugin-preload-skills"]
+}
+```
+
+**OpenCode V1 (>= 1.18.29):**
 ```json
 {
   "plugin": ["opencode-plugin-preload-skills"]
@@ -449,8 +457,10 @@ Choose where skills are injected:
 
 | Method | Description | Use Case |
 |--------|-------------|----------|
-| `systemPrompt` (default) | Injects into system prompt via `experimental.chat.system.transform` hook | Persistent across all LLM calls, invisible to user |
+| `systemPrompt` (default) | Injects into system prompt via `ctx.session.hook("context")` (OpenCode V2) or `experimental.chat.system.transform` hook (OpenCode V1) | Persistent across all LLM calls, invisible to user |
 | `chatMessage` | Injects skills into user messages | One-time injection, visible in conversation |
+
+> **Note on Compatibility:** In OpenCode V2, the recommended and native injection method is `systemPrompt` (via `ctx.session.hook("context")`). `chatMessage` is supported on OpenCode V1 adapter.
 
 **System prompt injection benefits (default):**
 - File-triggered skills available on next LLM step (same turn)
