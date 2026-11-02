@@ -3,72 +3,41 @@ import type { PluginContext } from "../types.js"
 
 const FILE_TOOLS = ["read", "edit", "write", "glob", "grep"]
 
-interface ToolExecuteInput {
-  tool: string
-  sessionID: string
-  callID: string
-}
-
-interface ToolExecuteBeforeOutput {
-  args: Record<string, unknown>
-}
-
-interface ToolExecuteAfterOutput {
-  title: string
-  output: string
-  metadata: unknown
-}
-
-function getFilePathFromArgs(args: Record<string, unknown>): string | null {
-  if (typeof args.filePath === "string") return args.filePath
-  if (typeof args.path === "string") return args.path
-  if (typeof args.file === "string") return args.file
+function getFilePathFromArgs(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null
+  const record = args as Record<string, unknown>
+  if (typeof record.filePath === "string") return record.filePath
+  if (typeof record.path === "string") return record.path
+  if (typeof record.file === "string") return record.file
   return null
 }
 
-export function createToolExecuteHooks(ctx: PluginContext) {
+export function createToolExecuteAfterHook(ctx: PluginContext) {
   const { config, sessionManager, skillResolver, log } = ctx
 
-  const before = async (
-    input: ToolExecuteInput,
-    output: ToolExecuteBeforeOutput
-  ): Promise<void> => {
-    if (!FILE_TOOLS.includes(input.tool)) return
+  return async (event: {
+    readonly tool: string
+    readonly sessionID: string
+    readonly input: unknown
+    readonly status: "completed" | "error"
+  }): Promise<void> => {
+    if (event.status !== "completed") return
+    if (!FILE_TOOLS.includes(event.tool)) return
+    if (!event.sessionID) return
 
-    const filePath = getFilePathFromArgs(output.args)
-    if (filePath) {
-      sessionManager.trackFilePath(input.callID, filePath)
-      log("debug", "Captured file path from tool", {
-        tool: input.tool,
-        callID: input.callID,
-        filePath,
-      })
-    }
-  }
-
-  const after = async (
-    input: ToolExecuteInput,
-    _output: ToolExecuteAfterOutput
-  ): Promise<void> => {
-    if (!FILE_TOOLS.includes(input.tool)) return
-    if (!input.sessionID) return
-
-    const filePath = sessionManager.getFilePath(input.callID)
-    sessionManager.clearFilePath(input.callID)
-
+    const filePath = getFilePathFromArgs(event.input)
     if (!filePath) {
-      log("debug", "No file path found for tool call", {
-        tool: input.tool,
-        callID: input.callID,
+      log("debug", "No file path found in tool input", {
+        tool: event.tool,
       })
       return
     }
 
-    const state = sessionManager.getState(input.sessionID)
+    const state = sessionManager.getState(event.sessionID)
     const ext = extname(filePath)
 
     log("debug", "Processing file access", {
-      tool: input.tool,
+      tool: event.tool,
       filePath,
       extension: ext,
     })
@@ -80,11 +49,11 @@ export function createToolExecuteHooks(ctx: PluginContext) {
         const result = skillResolver.loadWithBudget(
           extSkillNames,
           state.totalTokensUsed,
-          input.sessionID,
+          event.sessionID,
           "fileType"
         )
         if (result.skills.length > 0) {
-          sessionManager.queueSkills(input.sessionID, result.skills, "fileType")
+          sessionManager.queueSkills(event.sessionID, result.skills, "fileType")
         }
       }
     }
@@ -96,15 +65,13 @@ export function createToolExecuteHooks(ctx: PluginContext) {
         const result = skillResolver.loadWithBudget(
           pathSkillNames,
           state.totalTokensUsed,
-          input.sessionID,
+          event.sessionID,
           "path"
         )
         if (result.skills.length > 0) {
-          sessionManager.queueSkills(input.sessionID, result.skills, "path")
+          sessionManager.queueSkills(event.sessionID, result.skills, "path")
         }
       }
     }
   }
-
-  return { before, after }
 }

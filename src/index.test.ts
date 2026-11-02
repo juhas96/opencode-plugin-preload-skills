@@ -1,29 +1,108 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { PreloadSkillsPlugin } from "./index.js"
-import type { PluginInput } from "@opencode-ai/plugin"
+import plugin from "./index.js"
 
-describe("PreloadSkillsPlugin", () => {
+describe("PreloadSkillsPlugin V2", () => {
   const testDir = join(process.cwd(), ".test-plugin")
   const opencodeDir = join(testDir, ".opencode")
   const skillsDir = join(opencodeDir, "skills")
 
-  const createMockContext = (): PluginInput => ({
-    client: {
-      app: {
-        log: vi.fn(),
+  interface MockContextOptions {
+    eventBus?: {
+      emit: (event: any) => void
+      subscribe: (opts?: { signal?: AbortSignal }) => AsyncIterable<any>
+    }
+  }
+
+  const createEventBus = () => {
+    type Listener = (event: any) => void
+    const listeners: Listener[] = []
+
+    return {
+      emit(event: any) {
+        for (const l of listeners) {
+          l(event)
+        }
       },
-      tui: {
-        showToast: vi.fn(),
+      subscribe(opts?: { signal?: AbortSignal }) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            const queue: any[] = []
+            let resolveNext: (() => void) | null = null
+
+            const listener: Listener = (event: any) => {
+              queue.push(event)
+              resolveNext?.()
+            }
+            listeners.push(listener)
+
+            opts?.signal?.addEventListener("abort", () => {
+              resolveNext?.()
+            })
+
+            try {
+              while (!opts?.signal?.aborted) {
+                if (queue.length === 0) {
+                  await new Promise<void>((r) => {
+                    resolveNext = r
+                  })
+                }
+                while (queue.length > 0) {
+                  yield queue.shift()
+                }
+              }
+            } finally {
+              const idx = listeners.indexOf(listener)
+              if (idx >= 0) listeners.splice(idx, 1)
+            }
+          },
+        }
       },
-    } as unknown as PluginInput["client"],
-    project: {} as PluginInput["project"],
-    directory: testDir,
-    worktree: testDir,
-    serverUrl: new URL("http://localhost:3000"),
-    $: {} as PluginInput["$"],
-  })
+    }
+  }
+
+  const createMockContext = (options: MockContextOptions = {}) => {
+    const sessionHooks: Record<string, Function> = {}
+    const toolHooks: Record<string, Function> = {}
+    let toolTransformFn: ((editor: any) => void) | undefined
+    const eventBus = options.eventBus ?? createEventBus()
+
+    const ctx = {
+      location: {
+        directory: testDir,
+      },
+      session: {
+        hook: vi.fn((name: string, fn: Function) => {
+          sessionHooks[name] = fn
+          return Promise.resolve({ dispose: vi.fn() })
+        }),
+      },
+      tool: {
+        hook: vi.fn((name: string, fn: Function) => {
+          toolHooks[name] = fn
+          return Promise.resolve({ dispose: vi.fn() })
+        }),
+        transform: vi.fn((fn: (editor: any) => void) => {
+          toolTransformFn = fn
+          return Promise.resolve({ dispose: vi.fn() })
+        }),
+      },
+      event: {
+        subscribe: vi.fn((opts?: { signal?: AbortSignal }) => {
+          return eventBus.subscribe(opts)
+        }),
+      },
+    }
+
+    return {
+      ctx: ctx as any,
+      sessionHooks,
+      toolHooks,
+      getToolTransform: () => toolTransformFn,
+      eventBus,
+    }
+  }
 
   const createConfig = (config: Record<string, unknown>) => {
     mkdirSync(opencodeDir, { recursive: true })
@@ -36,56 +115,54 @@ describe("PreloadSkillsPlugin", () => {
     writeFileSync(join(skillDir, "SKILL.md"), content)
   }
 
-  const createMsgOutput = (text: string) => ({
-    message: {},
-    parts: [{ type: "text", text }],
-  })
-
   beforeEach(() => {
     mkdirSync(testDir, { recursive: true })
   })
 
   afterEach(() => {
     rmSync(testDir, { recursive: true, force: true })
+    vi.restoreAllMocks()
   })
 
   describe("initialization", () => {
-    it("initializes without config file", async () => {
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+    it("initializes without config file and registers V2 hooks", async () => {
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(hooks).toBeDefined()
-      expect(hooks["chat.message"]).toBeDefined()
-      expect(hooks["tool.execute.after"]).toBeDefined()
-      expect(hooks["experimental.session.compacting"]).toBeDefined()
-      expect(hooks.event).toBeDefined()
+      expect(sessionHooks["context"]).toBeDefined()
+      expect(sessionHooks["prompt"]).toBeDefined()
+      expect(toolHooks["execute.after"]).toBeDefined()
+      expect(sessionHooks["compaction"]).toBeDefined()
+      expect(ctx.event.subscribe).toHaveBeenCalled()
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("loads config from .opencode directory", async () => {
       createConfig({ skills: ["test-skill"], debug: true })
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => {})
+      const { ctx } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(hooks).toBeDefined()
-      expect(ctx.client.app.log).toHaveBeenCalled()
+      expect(consoleInfoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("[preload-skills] Loaded 1 initial skills"),
+        expect.any(Object)
+      )
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("logs warning when no skills configured", async () => {
       createConfig({})
 
-      const ctx = createMockContext()
-      await PreloadSkillsPlugin(ctx)
+      const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const { ctx } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(ctx.client.app.log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.objectContaining({
-            level: "warn",
-            message: expect.stringContaining("No skills configured"),
-          }),
-        })
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("No skills configured")
       )
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("loads initial skills on startup", async () => {
@@ -93,323 +170,362 @@ describe("PreloadSkillsPlugin", () => {
       createSkill("skill-b", "---\nname: skill-b\ndescription: B\n---\nContent B")
       createConfig({ skills: ["skill-a", "skill-b"] })
 
-      const ctx = createMockContext()
-      await PreloadSkillsPlugin(ctx)
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => {})
+      const { ctx } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(ctx.client.app.log).toHaveBeenCalledWith(
+      expect(consoleInfoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Loaded 2 initial skills"),
         expect.objectContaining({
-          body: expect.objectContaining({
-            level: "info",
-            message: expect.stringContaining("Loaded 2 initial skills"),
-          }),
+          loaded: ["skill-a", "skill-b"],
         })
       )
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("logs missing skills", async () => {
       createSkill("exists", "---\nname: exists\ndescription: E\n---\nContent")
       createConfig({ skills: ["exists", "missing"] })
 
-      const ctx = createMockContext()
-      await PreloadSkillsPlugin(ctx)
+      const consoleInfoSpy = vi.spyOn(console, "info").mockImplementation(() => {})
+      const { ctx } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(ctx.client.app.log).toHaveBeenCalledWith(
+      expect(consoleInfoSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Loaded 1 initial skills"),
         expect.objectContaining({
-          body: expect.objectContaining({
-            extra: expect.objectContaining({
-              missing: ["missing"],
-            }),
-          }),
+          missing: ["missing"],
         })
       )
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
-  describe("chat.message hook", () => {
-    it("injects initial skills on first message", async () => {
+  describe("context hook (system prompt injection)", () => {
+    it("injects initial skills into system prompt", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nSkill Content Here")
-      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
+      createConfig({ skills: ["test-skill"] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("User message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const event: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(event)
 
-      expect(output.parts[0]!.text).toContain("<preloaded-skills>")
-      expect(output.parts[0]!.text).toContain("Skill Content Here")
-      expect(output.parts[0]!.text).toContain("User message")
+      expect(event.system).toHaveLength(1)
+      expect(event.system[0].type).toBe("text")
+      expect(event.system[0].text).toContain("<preloaded-skills>")
+      expect(event.system[0].text).toContain("Skill Content Here")
+      if (typeof cleanup === "function") cleanup()
     })
 
-    it("does not re-inject skills on subsequent messages", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output1 = createMsgOutput("First message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output1)
-
-      const output2 = createMsgOutput("Second message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output2)
-
-      expect(output2.parts[0]!.text).toBe("Second message")
-    })
-
-    it("triggers agent-specific skills", async () => {
+    it("triggers agent-specific skills during context hook", async () => {
       createSkill("plan-skill", "---\nname: plan-skill\ndescription: Plan\n---\nPlan Content")
-      createConfig({ agentSkills: { plan: ["plan-skill"] }, injectionMethod: "chatMessage" })
+      createConfig({ agentSkills: { plan: ["plan-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session", agent: "plan" }, output)
+      const event: any = {
+        sessionID: "test-session",
+        agent: "plan",
+        system: [],
+      }
+      await sessionHooks["context"]!(event)
 
-      expect(output.parts[0]!.text).toContain("Plan Content")
-    })
-
-    it("triggers content-based skills", async () => {
-      createSkill("db-skill", "---\nname: db-skill\ndescription: DB\n---\nDatabase Content")
-      createConfig({ contentTriggers: { database: ["db-skill"] }, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("I need help with database queries")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect(output.parts[0]!.text).toContain("Database Content")
+      expect(event.system).toHaveLength(1)
+      expect(event.system[0].text).toContain("Plan Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("handles missing sessionID gracefully", async () => {
-      createConfig({ skills: [] })
+      createConfig({ skills: ["test-skill"] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "" }, output)
+      const event: any = {
+        sessionID: "",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(event)
 
-      expect(output.parts[0]!.text).toBe("Message")
+      expect(event.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
+    })
+  })
+
+  describe("prompt hook (content triggers)", () => {
+    it("queues skills on prompt content keyword match and injects on next context hook", async () => {
+      createSkill("db-skill", "---\nname: db-skill\ndescription: DB\n---\nDatabase Content")
+      createConfig({ contentTriggers: { database: ["db-skill"] } })
+
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
+
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          text: "I need help with database queries",
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(1)
+      expect(contextEvent.system[0].text).toContain("Database Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
-    it("handles missing text part gracefully", async () => {
-      createConfig({ skills: ["test"] })
+    it("strips ignored tags before running content trigger keyword match", async () => {
+      createSkill("image-skill", "---\nname: image-skill\ndescription: Image\n---\nImage Content")
+      createConfig({
+        contentTriggers: { "cover image": ["image-skill"] },
+      })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = { message: {}, parts: [{ type: "image" }] }
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      // Prompt has "cover image" inside <session-history>, should not trigger
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          text: "<session-history>Previous conversation about cover image</session-history>\nHello world",
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
 
-      expect(output.parts).toHaveLength(1)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
   describe("tool.execute.after hook", () => {
-    it("triggers file type skills", async () => {
+    it("triggers file type skills from execute.after input and injects on context", async () => {
       createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
-      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] }, injectionMethod: "chatMessage" })
+      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { args: { filePath: "src/index.ts" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
+      await toolHooks["execute.after"]!({
+        tool: "read",
+        sessionID: "test-session",
+        input: { filePath: "src/index.ts" },
+        status: "completed",
+      })
 
-      const output = createMsgOutput("Next message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("TypeScript Content")
+      expect(contextEvent.system[0].text).toContain("TypeScript Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("triggers path pattern skills", async () => {
       createSkill("api-skill", "---\nname: api-skill\ndescription: API\n---\nAPI Content")
-      createConfig({ pathPatterns: { "src/api/**": ["api-skill"] }, injectionMethod: "chatMessage" })
+      createConfig({ pathPatterns: { "src/api/**": ["api-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "edit", sessionID: "test-session", callID: "call-1" },
-        { args: { filePath: "src/api/users.ts" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "edit", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
+      await toolHooks["execute.after"]!({
+        tool: "edit",
+        sessionID: "test-session",
+        input: { filePath: "src/api/users.ts" },
+        status: "completed",
+      })
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("API Content")
+      expect(contextEvent.system[0].text).toContain("API Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("ignores non-file tools", async () => {
+      createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
       createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "bash", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "test.ts" } } }
-      )
+      await toolHooks["execute.after"]!({
+        tool: "bash",
+        sessionID: "test-session",
+        input: { command: "echo test.ts" },
+        status: "completed",
+      })
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
     })
 
-    it("handles missing metadata gracefully", async () => {
+    it("ignores non-completed tool executions", async () => {
+      createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
       createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
+      await toolHooks["execute.after"]!({
+        tool: "read",
+        sessionID: "test-session",
+        input: { filePath: "src/index.ts" },
+        status: "error",
+      })
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
     })
 
-    it("handles various file path argument names", async () => {
+    it("handles various file path argument names (path, file)", async () => {
       createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTS Content")
       createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { args: { path: "test.ts" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
+      await toolHooks["execute.after"]!({
+        tool: "read",
+        sessionID: "test-session",
+        input: { path: "test.ts" },
+        status: "completed",
+      })
 
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session-2", callID: "call-2" },
-        { title: "", output: "", metadata: { args: { file: "test2.ts" } } }
-      )
-    })
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-    it("handles missing sessionID gracefully", async () => {
-      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { filePath: "test.ts" } } }
-      )
-    })
-
-    it("handles args without file path gracefully", async () => {
-      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] } })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: { args: { someOtherArg: "value" } } }
-      )
+      expect(contextEvent.system[0].text).toContain("TS Content")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
-  describe("experimental.session.compacting hook", () => {
-    it("adds loaded skills to compaction context", async () => {
+  describe("compaction hook", () => {
+    it("adds loaded skills to compaction context system array", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
       createConfig({ skills: ["test-skill"], persistAfterCompaction: true })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const msgOutput = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, msgOutput)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      const compactOutput = { context: [] as string[], prompt: undefined }
-      await (hooks["experimental.session.compacting"] as Function)({ sessionID: "test-session" }, compactOutput)
+      const compactionEvent: any = {
+        sessionID: "test-session",
+        system: [],
+      }
+      await sessionHooks["compaction"]!(compactionEvent)
 
-      expect(compactOutput.context).toHaveLength(1)
-      expect(compactOutput.context[0]).toContain("Preloaded Skills")
+      expect(compactionEvent.system).toHaveLength(1)
+      expect(compactionEvent.system[0].type).toBe("text")
+      expect(compactionEvent.system[0].text).toContain("## Preloaded Skills")
+      expect(compactionEvent.system[0].text).toContain("Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("respects persistAfterCompaction=false", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
       createConfig({ skills: ["test-skill"], persistAfterCompaction: false })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const msgOutput = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, msgOutput)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      const compactOutput = { context: [] as string[], prompt: undefined }
-      await (hooks["experimental.session.compacting"] as Function)({ sessionID: "test-session" }, compactOutput)
+      const compactionEvent: any = {
+        sessionID: "test-session",
+        system: [],
+      }
+      await sessionHooks["compaction"]!(compactionEvent)
 
-      expect(compactOutput.context).toHaveLength(0)
-    })
-
-    it("handles unknown session gracefully", async () => {
-      createConfig({ skills: [], persistAfterCompaction: true })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const compactOutput = { context: [] as string[], prompt: undefined }
-      await (hooks["experimental.session.compacting"] as Function)({ sessionID: "unknown-session" }, compactOutput)
-
-      expect(compactOutput.context).toHaveLength(0)
+      expect(compactionEvent.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
-  describe("event hook", () => {
+  describe("session.deleted event", () => {
     it("cleans up session state on session.deleted", async () => {
       createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"], debug: true })
+      createConfig({ skills: ["test-skill"], debug: true, analytics: true })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const eventBus = createEventBus()
+      const { ctx, sessionHooks } = createMockContext({ eventBus })
+      const cleanup = await plugin.setup(ctx)
 
-      const msgOutput = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, msgOutput)
+      const contextEvent: any = {
+        sessionID: "session-to-delete",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      await (hooks.event as Function)({
-        event: {
-          type: "session.deleted",
-          properties: { sessionID: "test-session" },
-        },
+      eventBus.emit({
+        type: "session.deleted",
+        data: { sessionID: "session-to-delete" },
       })
 
-      expect(ctx.client.app.log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.objectContaining({
-            message: "Cleaned up session state",
-          }),
-        })
-      )
-    })
+      // Give async microtask a cycle to process
+      await new Promise((r) => setTimeout(r, 20))
 
-    it("ignores non-session.deleted events", async () => {
-      createConfig({})
+      const analyticsPath = join(testDir, ".opencode", "preload-skills-analytics.json")
+      expect(existsSync(analyticsPath)).toBe(true)
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      await (hooks.event as Function)({
-        event: {
-          type: "message.updated",
-          properties: {},
-        },
-      })
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
@@ -420,18 +536,22 @@ describe("PreloadSkillsPlugin", () => {
       writeFileSync(join(testDir, "prisma", "schema.prisma"), "model User {}")
       createConfig({
         conditionalSkills: [
-          { skill: "prisma-skill", if: { fileExists: "prisma/schema.prisma" } }
+          { skill: "prisma-skill", if: { fileExists: "prisma/schema.prisma" } },
         ],
-        injectionMethod: "chatMessage"
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("Prisma Content")
+      expect(contextEvent.system[0].text).toContain("Prisma Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("loads skill when package dependency condition is met", async () => {
@@ -439,18 +559,22 @@ describe("PreloadSkillsPlugin", () => {
       writeFileSync(join(testDir, "package.json"), JSON.stringify({ dependencies: { react: "^18" } }))
       createConfig({
         conditionalSkills: [
-          { skill: "react-skill", if: { packageHasDependency: "react" } }
+          { skill: "react-skill", if: { packageHasDependency: "react" } },
         ],
-        injectionMethod: "chatMessage"
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("React Content")
+      expect(contextEvent.system[0].text).toContain("React Content")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("skips skill when condition is not met", async () => {
@@ -458,17 +582,22 @@ describe("PreloadSkillsPlugin", () => {
       writeFileSync(join(testDir, "package.json"), JSON.stringify({ dependencies: { vue: "^3" } }))
       createConfig({
         conditionalSkills: [
-          { skill: "react-skill", if: { packageHasDependency: "react" } }
-        ]
+          { skill: "react-skill", if: { packageHasDependency: "react" } },
+        ],
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).not.toContain("React Content")
+      expect(contextEvent.system).toHaveLength(0)
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
@@ -479,17 +608,21 @@ describe("PreloadSkillsPlugin", () => {
       createConfig({
         groups: { frontend: ["react", "css"] },
         skills: ["@frontend"],
-        injectionMethod: "chatMessage"
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("React Content")
-      expect(output.parts[0]!.text).toContain("CSS Content")
+      expect(contextEvent.system[0].text).toContain("React Content")
+      expect(contextEvent.system[0].text).toContain("CSS Content")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
@@ -500,37 +633,44 @@ describe("PreloadSkillsPlugin", () => {
       createConfig({
         skills: ["small", "large"],
         maxTokens: 100,
-        injectionMethod: "chatMessage"
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("Small")
-      expect(output.parts[0]!.text).not.toContain("xxxx")
+      expect(contextEvent.system[0].text).toContain("Small")
+      expect(contextEvent.system[0].text).not.toContain("xxxx")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
-  describe("useSummaries", () => {
+  describe("useSummaries and skillSettings", () => {
     it("uses summaries when enabled", async () => {
       createSkill("test", "---\nname: test\ndescription: Test\nsummary: Brief summary\n---\nFull content here")
-      createConfig({ skills: ["test"], useSummaries: true, injectionMethod: "chatMessage" })
+      createConfig({ skills: ["test"], useSummaries: true })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("Brief summary")
-      expect(output.parts[0]!.text).not.toContain("Full content here")
+      expect(contextEvent.system[0].text).toContain("Brief summary")
+      expect(contextEvent.system[0].text).not.toContain("Full content here")
+      if (typeof cleanup === "function") cleanup()
     })
-  })
 
-  describe("skillSettings", () => {
     it("applies per-skill summary settings", async () => {
       createSkill("full", "---\nname: full\ndescription: Full\nsummary: Full summary\n---\nFull content")
       createSkill("brief", "---\nname: brief\ndescription: Brief\nsummary: Brief summary\n---\nBrief content")
@@ -538,178 +678,62 @@ describe("PreloadSkillsPlugin", () => {
         skills: ["full", "brief"],
         useSummaries: false,
         skillSettings: { brief: { useSummary: true } },
-        injectionMethod: "chatMessage"
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("Full content")
-      expect(output.parts[0]!.text).toContain("Brief summary")
-      expect(output.parts[0]!.text).not.toContain("Brief content")
+      expect(contextEvent.system[0].text).toContain("Full content")
+      expect(contextEvent.system[0].text).toContain("Brief summary")
+      expect(contextEvent.system[0].text).not.toContain("Brief content")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
   describe("useMinification", () => {
-    it("minifies skill content when enabled with chatMessage injection", async () => {
+    it("minifies skill content when enabled", async () => {
       createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\n# Title\n\n\n\nSome    spaced    content\n\n<!-- comment -->\n\nEnd")
-      createConfig({ skills: ["verbose"], useMinification: true, injectionMethod: "chatMessage" })
+      createConfig({ skills: ["verbose"], useMinification: true })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("# Title")
-      expect(output.parts[0]!.text).toContain("Some spaced content")
-      expect(output.parts[0]!.text).not.toContain("<!-- comment -->")
-    })
-
-    it("minifies skill content when enabled with systemPrompt injection", async () => {
-      createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\n# Title\n\n\n\nSome    spaced    content\n\n<!-- comment -->\n\nEnd")
-      createConfig({ skills: ["verbose"], useMinification: true, injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const systemOutput = { system: [] as string[] }
-      await (hooks["experimental.chat.system.transform"] as Function)(
-        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
-        systemOutput
-      )
-
-      expect(systemOutput.system[0]).toContain("# Title")
-      expect(systemOutput.system[0]).toContain("Some spaced content")
-      expect(systemOutput.system[0]).not.toContain("<!-- comment -->")
+      expect(contextEvent.system[0].text).toContain("# Title")
+      expect(contextEvent.system[0].text).toContain("Some spaced content")
+      expect(contextEvent.system[0].text).not.toContain("<!-- comment -->")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("does not minify when disabled (default)", async () => {
       createSkill("verbose", "---\nname: verbose\ndescription: Verbose\n---\n\nSome    spaced    content")
-      createConfig({ skills: ["verbose"], injectionMethod: "chatMessage" })
+      createConfig({ skills: ["verbose"] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      expect(output.parts[0]!.text).toContain("Some    spaced    content")
-    })
-  })
-
-  describe("showToasts", () => {
-    it("shows toast on initial skill injection with chatMessage method", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"], showToasts: true, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect((ctx.client as any).tui.showToast).toHaveBeenCalledWith({
-        body: expect.objectContaining({
-          message: expect.stringContaining("test-skill"),
-          variant: "info",
-        }),
-      })
-    })
-
-    it("shows toast on initial skill injection with systemPrompt method", async () => {
-      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nContent")
-      createConfig({ skills: ["sys-skill"], showToasts: true, injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const systemOutput = { system: [] as string[] }
-      await (hooks["experimental.chat.system.transform"] as Function)(
-        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
-        systemOutput
-      )
-
-      expect((ctx.client as any).tui.showToast).toHaveBeenCalledWith({
-        body: expect.objectContaining({
-          message: expect.stringContaining("sys-skill"),
-          variant: "info",
-        }),
-      })
-    })
-
-    it("does not show toast when showToasts is false", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"], showToasts: false, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect((ctx.client as any).tui.showToast).not.toHaveBeenCalled()
-    })
-
-    it("does not show toast by default", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect((ctx.client as any).tui.showToast).not.toHaveBeenCalled()
-    })
-
-    it("shows toast for triggered skills", async () => {
-      createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
-      createConfig({ fileTypeSkills: { ".ts": ["ts-skill"] }, showToasts: true, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { args: { filePath: "src/index.ts" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
-
-      const output = createMsgOutput("Next message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect((ctx.client as any).tui.showToast).toHaveBeenCalledWith({
-        body: expect.objectContaining({
-          message: expect.stringContaining("ts-skill"),
-          variant: "info",
-        }),
-      })
-    })
-
-    it("shows toast with correct plural form for multiple skills", async () => {
-      createSkill("skill-a", "---\nname: skill-a\ndescription: A\n---\nContent A")
-      createSkill("skill-b", "---\nname: skill-b\ndescription: B\n---\nContent B")
-      createConfig({ skills: ["skill-a", "skill-b"], showToasts: true, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect((ctx.client as any).tui.showToast).toHaveBeenCalledWith({
-        body: expect.objectContaining({
-          message: expect.stringMatching(/Loaded 2 skills: skill-a, skill-b/),
-        }),
-      })
+      expect(contextEvent.system[0].text).toContain("Some    spaced    content")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
@@ -718,347 +742,346 @@ describe("PreloadSkillsPlugin", () => {
       createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")
       createConfig({ skills: ["test"] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, getToolTransform } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(hooks["tool"]).toBeDefined()
-      expect((hooks["tool"] as any).loaded_skills).toBeDefined()
+      const toolTransform = getToolTransform()
+      expect(toolTransform).toBeDefined()
+
+      const addedTools: Record<string, any> = {}
+      const mockEditor = {
+        add: vi.fn((toolDef: any) => {
+          addedTools[toolDef.name] = toolDef
+        }),
+      }
+
+      toolTransform!(mockEditor)
+      expect(addedTools["loaded_skills"]).toBeDefined()
+      expect(addedTools["loaded_skills"].description).toContain("List all preloaded skills")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("does not register tool when enableTools is false", async () => {
       createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")
       createConfig({ skills: ["test"], enableTools: false })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, getToolTransform } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      expect(hooks["tool"]).toBeUndefined()
+      expect(getToolTransform()).toBeUndefined()
+      if (typeof cleanup === "function") cleanup()
     })
 
-    it("returns loaded skills when executed", async () => {
+    it("returns loaded skills and adheres to Tool.Result ({ content: string })", async () => {
       createSkill("my-skill", "---\nname: my-skill\ndescription: My Skill Desc\n---\nContent here")
-      createConfig({ skills: ["my-skill"], injectionMethod: "chatMessage" })
+      createConfig({ skills: ["my-skill"] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, getToolTransform } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      const toolDef = (hooks["tool"] as any).loaded_skills
-      const toolCtx = {
+      const contextEvent: any = {
         sessionID: "test-session",
-        messageID: "msg-1",
         agent: "build",
-        directory: testDir,
-        worktree: testDir,
-        abort: new AbortController().signal,
-        metadata: vi.fn(),
-        ask: vi.fn(),
+        system: [],
       }
+      await sessionHooks["context"]!(contextEvent)
 
-      const result = await toolDef.execute({}, toolCtx)
+      const addedTools: Record<string, any> = {}
+      getToolTransform()!({
+        add: (tool: any) => {
+          addedTools[tool.name] = tool
+        },
+      })
 
-      expect(result).toContain("my-skill")
-      expect(result).toContain("My Skill Desc")
-      expect(result).toContain("1 skill loaded")
+      const tool = addedTools["loaded_skills"]
+      const result = await tool.execute({}, { sessionID: "test-session" })
+
+      expect(result).toHaveProperty("content")
+      expect(result.content).toContain("my-skill")
+      expect(result.content).toContain("My Skill Desc")
+      expect(result.content).toContain("1 skill loaded")
+      expect(result.content).toContain("Token budget:")
+      if (typeof cleanup === "function") cleanup()
     })
 
     it("returns empty message when no skills loaded", async () => {
       createConfig({ skills: [] })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, getToolTransform } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      const toolDef = (hooks["tool"] as any).loaded_skills
-      const toolCtx = {
-        sessionID: "fresh-session",
-        messageID: "msg-1",
-        agent: "build",
-        directory: testDir,
-        worktree: testDir,
-        abort: new AbortController().signal,
-        metadata: vi.fn(),
-        ask: vi.fn(),
-      }
-
-      const result = await toolDef.execute({}, toolCtx)
-
-      expect(result).toContain("No skills currently loaded")
-    })
-
-    it("includes token budget info", async () => {
-      createSkill("skill-a", "---\nname: skill-a\ndescription: A\n---\nContent A")
-      createConfig({ skills: ["skill-a"], injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      const toolDef = (hooks["tool"] as any).loaded_skills
-      const toolCtx = {
-        sessionID: "test-session",
-        messageID: "msg-1",
-        agent: "build",
-        directory: testDir,
-        worktree: testDir,
-        abort: new AbortController().signal,
-        metadata: vi.fn(),
-        ask: vi.fn(),
-      }
-
-      const result = await toolDef.execute({}, toolCtx)
-
-      expect(result).toContain("Token budget:")
-      expect(result).toContain("used")
-    })
-
-    it("shows toast when executed with showToasts enabled", async () => {
-      createSkill("my-skill", "---\nname: my-skill\ndescription: My Desc\n---\nContent")
-      createConfig({ skills: ["my-skill"], showToasts: true, injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-      ;(ctx.client as any).tui.showToast.mockClear()
-
-      const toolDef = (hooks["tool"] as any).loaded_skills
-      const toolCtx = {
-        sessionID: "test-session",
-        messageID: "msg-1",
-        agent: "build",
-        directory: testDir,
-        worktree: testDir,
-        abort: new AbortController().signal,
-        metadata: vi.fn(),
-        ask: vi.fn(),
-      }
-
-      await toolDef.execute({}, toolCtx)
-
-      expect((ctx.client as any).tui.showToast).toHaveBeenCalledWith({
-        body: expect.objectContaining({
-          message: expect.stringContaining("my-skill"),
-          variant: "success",
-        }),
-      })
-    })
-  })
-
-  describe("analytics", () => {
-    it("tracks skill usage when enabled", async () => {
-      createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test"], analytics: true })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      const compactOutput = { context: [] as string[], prompt: undefined }
-      await (hooks["experimental.session.compacting"] as Function)({ sessionID: "test-session" }, compactOutput)
-    })
-
-    it("saves analytics to file on session delete", async () => {
-      createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")
-      createConfig({ skills: ["test"], analytics: true })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      await (hooks.event as Function)({
-        event: {
-          type: "session.deleted",
-          properties: { sessionID: "test-session" },
+      const addedTools: Record<string, any> = {}
+      getToolTransform()!({
+        add: (tool: any) => {
+          addedTools[tool.name] = tool
         },
       })
+
+      const tool = addedTools["loaded_skills"]
+      const result = await tool.execute({}, { sessionID: "empty-session" })
+
+      expect(result).toHaveProperty("content")
+      expect(result.content).toContain("No skills currently loaded")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 
-  describe("config parsing", () => {
-    it("handles malformed config gracefully", async () => {
-      mkdirSync(opencodeDir, { recursive: true })
-      writeFileSync(join(opencodeDir, "preload-skills.json"), "invalid json {{{")
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      expect(hooks).toBeDefined()
+  describe("hybrid exports & V1 adapter", () => {
+    it("exports id, setup (V2), and server (V1) on default export", () => {
+      expect(plugin).toHaveProperty("id", "preload-skills")
+      expect(plugin).toHaveProperty("setup")
+      expect(typeof plugin.setup).toBe("function")
+      expect(plugin).toHaveProperty("server")
+      expect(typeof plugin.server).toBe("function")
     })
 
-    it("parses all config options", async () => {
-      createSkill("test", "---\nname: test\ndescription: Test\n---\nContent")
+    it("supports prompt with parts array in V2 prompt hook", async () => {
+      createSkill("part-skill", "---\nname: part-skill\ndescription: Part\n---\nPart Content")
+      createConfig({ contentTriggers: { triggerword: ["part-skill"] } })
+
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
+
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          parts: [
+            { type: "text", text: "hello world" },
+            { type: "other", text: "ignored" },
+            { type: "text", text: "this contains triggerword here" },
+          ],
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(1)
+      expect(contextEvent.system[0].text).toContain("Part Content")
+      if (typeof cleanup === "function") cleanup()
+    })
+
+    it("supports prompt with text: '' but valid parts", async () => {
+      createSkill("part-skill", "---\nname: part-skill\ndescription: Part\n---\nPart Content")
+      createConfig({ contentTriggers: { triggerword: ["part-skill"] } })
+
+      const { ctx, sessionHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
+
+      const promptEvent: any = {
+        sessionID: "test-session",
+        prompt: {
+          text: "",
+          parts: [
+            { type: "text", text: "this contains triggerword here" },
+          ],
+        },
+      }
+      await sessionHooks["prompt"]!(promptEvent)
+
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
+
+      expect(contextEvent.system).toHaveLength(1)
+      expect(contextEvent.system[0].text).toContain("Part Content")
+      if (typeof cleanup === "function") cleanup()
+    })
+
+    it("initializes V1 server adapter and handles experimental.chat.system.transform, tool.execute.after, and compaction", async () => {
+      createSkill("v1-initial", "---\nname: v1-initial\ndescription: V1 Initial\n---\nInitial V1 Skill")
+      createSkill("v1-file", "---\nname: v1-file\ndescription: V1 File\n---\nFile V1 Skill")
+      createSkill("v1-content", "---\nname: v1-content\ndescription: V1 Content\n---\nContent V1 Skill")
       createConfig({
-        skills: ["test"],
-        fileTypeSkills: { ".ts": ["ts-skill"] },
-        agentSkills: { plan: ["plan-skill"] },
-        pathPatterns: { "src/**": ["src-skill"] },
-        contentTriggers: { database: ["db-skill"] },
-        groups: { frontend: ["react"] },
-        conditionalSkills: [{ skill: "cond", if: { fileExists: "test" } }],
-        skillSettings: { test: { useSummary: true } },
-        maxTokens: 5000,
-        useSummaries: true,
-        analytics: true,
+        skills: ["v1-initial"],
+        fileTypeSkills: { ".ts": ["v1-file"] },
+        contentTriggers: { "v1trigger": ["v1-content"] },
         persistAfterCompaction: true,
-        debug: true
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: vi.fn(),
+          },
+        },
+      }
 
-      expect(hooks).toBeDefined()
+      const hooks = await plugin.server(v1Ctx)
+      expect(hooks).toHaveProperty("experimental.chat.system.transform")
+      expect(hooks).toHaveProperty("chat.message")
+      expect(hooks).toHaveProperty("tool.execute.after")
+      expect(hooks).toHaveProperty("experimental.session.compacting")
+      expect(hooks).toHaveProperty("event")
+      expect(hooks).toHaveProperty("tool")
+      expect(hooks).toHaveProperty("dispose")
+
+      // 1. experimental.chat.system.transform test
+      const chatTransform = hooks["experimental.chat.system.transform"] as Function
+      const paramsOutput: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "v1-session", agent: "build" }, paramsOutput)
+
+      expect(paramsOutput.system).toHaveLength(1)
+      expect(typeof paramsOutput.system[0]).toBe("string")
+      expect(paramsOutput.system[0]).toContain("Initial V1 Skill")
+
+      // 2. chat.message test with output.parts
+      const chatMessage = hooks["chat.message"] as Function
+      await chatMessage(
+        { sessionID: "v1-session", agent: "build" },
+        { parts: [{ type: "text", text: "triggering with v1trigger here" }] }
+      )
+
+      // 3. tool.execute.after test with input.args
+      const toolExec = hooks["tool.execute.after"] as Function
+      await toolExec(
+        { tool: "read", sessionID: "v1-session", args: { filePath: "src/main.ts" } },
+        {}
+      )
+
+      // Next system transform should inject the triggered skills
+      const paramsOutput2: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "v1-session", agent: "build" }, paramsOutput2)
+      expect(paramsOutput2.system[0]).toContain("File V1 Skill")
+      expect(paramsOutput2.system[0]).toContain("Content V1 Skill")
+
+      // 4. experimental.session.compacting test
+      const compactingHook = hooks["experimental.session.compacting"] as Function
+      const compactOutput: { context: string[] } = { context: [] }
+      await compactingHook({ sessionID: "v1-session" }, compactOutput)
+      expect(compactOutput.context).toHaveLength(1)
+      expect(typeof compactOutput.context[0]).toBe("string")
+      expect(compactOutput.context[0]).toContain("## Preloaded Skills")
+      expect(compactOutput.context[0]).toContain("Initial V1 Skill")
+
+      // 5. V1 tool test
+      const toolsObj = hooks.tool as Record<string, any>
+      expect(toolsObj.loaded_skills).toBeDefined()
+      const toolResult = await toolsObj.loaded_skills.execute({}, { sessionID: "v1-session" })
+      expect(typeof toolResult).toBe("string")
+      expect(toolResult).toContain("v1-initial")
+      expect(toolResult).toContain("v1-file")
+      expect(toolResult).toContain("v1-content")
+
+      // 6. V1 session.deleted event test with properties.sessionID
+      const eventHook = hooks.event as Function
+      await eventHook({ event: { type: "session.deleted", properties: { sessionID: "v1-session" } } })
+      const postCleanupToolResult = await toolsObj.loaded_skills.execute({}, { sessionID: "v1-session" })
+      // v1-file and v1-content should be cleaned up; a new session state only initializes with initial skills (v1-initial)
+      expect(postCleanupToolResult).toContain("v1-initial")
+      expect(postCleanupToolResult).not.toContain("v1-file")
+      expect(postCleanupToolResult).not.toContain("v1-content")
+
+      // 7. Dispose test
+      const disposeFn = hooks.dispose as Function
+      expect(typeof disposeFn).toBe("function")
+      disposeFn()
+    })
+
+    it("supports injectionMethod: 'chatMessage' in V1 adapter", async () => {
+      createSkill("chat-skill", "---\nname: chat-skill\ndescription: Chat Skill\n---\nChat Skill Content")
+      createSkill("triggered-chat-skill", "---\nname: triggered-chat-skill\ndescription: Triggered\n---\nTriggered Content")
+      createConfig({
+        skills: ["chat-skill"],
+        contentTriggers: { "findme": ["triggered-chat-skill"] },
+        injectionMethod: "chatMessage",
+      })
+
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: vi.fn(),
+          },
+        },
+      }
+
+      const hooks = await plugin.server(v1Ctx)
+      // When injectionMethod is chatMessage, experimental.chat.system.transform should NOT be registered
+      expect(hooks).not.toHaveProperty("experimental.chat.system.transform")
+      expect(hooks).toHaveProperty("chat.message")
+
+      const chatMessage = hooks["chat.message"] as Function
+
+      // Initial chat message injection
+      const output1: { parts: Array<{ type: string; text: string }> } = {
+        parts: [{ type: "text", text: "Hello AI" }],
+      }
+      await chatMessage({ sessionID: "chat-v1-session", agent: "build" }, output1)
+
+      expect(output1.parts.length).toBeGreaterThan(1)
+      const injectedPart = output1.parts.find((p) => p.text.includes("Chat Skill Content"))
+      expect(injectedPart).toBeDefined()
+
+      // Subsequent message with trigger keyword
+      const output2: { parts: Array<{ type: string; text: string }> } = {
+        parts: [{ type: "text", text: "Please findme some answers" }],
+      }
+      await chatMessage({ sessionID: "chat-v1-session", agent: "build" }, output2)
+
+      const triggeredPart = output2.parts.find((p) => p.text.includes("Triggered Content"))
+      expect(triggeredPart).toBeDefined()
+    })
+
+    it("honors showToasts: false in V1 adapter", async () => {
+      createSkill("toast-skill", "---\nname: toast-skill\ndescription: Toast\n---\nToast Content")
+      createConfig({
+        skills: ["toast-skill"],
+        showToasts: false,
+      })
+
+      const showToastMock = vi.fn()
+      const v1Ctx = {
+        directory: testDir,
+        client: {
+          tui: {
+            showToast: showToastMock,
+          },
+        },
+      }
+
+      const hooks = await plugin.server(v1Ctx)
+      const chatTransform = hooks["experimental.chat.system.transform"] as Function
+      const paramsOutput: { system: string[] } = { system: [] }
+      await chatTransform({ sessionID: "toast-session", agent: "build" }, paramsOutput)
+
+      expect(showToastMock).not.toHaveBeenCalled()
     })
   })
 
   describe("multiple file extension support", () => {
     it("supports comma-separated extensions", async () => {
       createSkill("jsx-skill", "---\nname: jsx-skill\ndescription: JSX\n---\nJSX Content")
-      createConfig({ fileTypeSkills: { ".jsx,.tsx": ["jsx-skill"] }, injectionMethod: "chatMessage" })
+      createConfig({ fileTypeSkills: { ".jsx,.tsx": ["jsx-skill"] } })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const { ctx, sessionHooks, toolHooks } = createMockContext()
+      const cleanup = await plugin.setup(ctx)
 
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { args: { filePath: "Component.tsx" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
-
-      const output = createMsgOutput("Message")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, output)
-
-      expect(output.parts[0]!.text).toContain("JSX Content")
-    })
-  })
-
-  describe("injectionMethod config", () => {
-    it("defaults to systemPrompt injection method", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
-      createConfig({ skills: ["test-skill"] })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
-      expect(hooks["chat.message"]).toBeDefined()
-    })
-
-    it("uses chatMessage injection when explicitly configured", async () => {
-      createSkill("test-skill", "---\nname: test-skill\ndescription: Test\n---\nTest Content")
-      createConfig({ skills: ["test-skill"], injectionMethod: "chatMessage" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
-      expect(hooks["chat.message"]).toBeDefined()
-    })
-
-    it("injects skills into system prompt array", async () => {
-      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nSystem Skill Content")
-      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const systemOutput = { system: [] as string[] }
-      await (hooks["experimental.chat.system.transform"] as Function)(
-        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
-        systemOutput
-      )
-
-      expect(systemOutput.system.length).toBe(1)
-      expect(systemOutput.system[0]).toContain("System Skill Content")
-    })
-
-    it("does not inject into chat.message when using systemPrompt method", async () => {
-      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nSystem Skill Content")
-      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const msgOutput = createMsgOutput("Hello")
-      await (hooks["chat.message"] as Function)({ sessionID: "test-session" }, msgOutput)
-
-      expect(msgOutput.parts[0]!.text).toBe("Hello")
-    })
-
-    it("system prompt injection handles missing sessionID", async () => {
-      createSkill("sys-skill", "---\nname: sys-skill\ndescription: System\n---\nContent")
-      createConfig({ skills: ["sys-skill"], injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      const systemOutput = { system: [] as string[] }
-      await (hooks["experimental.chat.system.transform"] as Function)(
-        { model: { id: "test", providerID: "test" } },
-        systemOutput
-      )
-
-      expect(systemOutput.system.length).toBe(0)
-    })
-
-    it("system prompt includes triggered skills", async () => {
-      createSkill("initial-skill", "---\nname: initial-skill\ndescription: Initial\n---\nInitial Content")
-      createSkill("ts-skill", "---\nname: ts-skill\ndescription: TS\n---\nTypeScript Content")
-      createConfig({
-        skills: ["initial-skill"],
-        fileTypeSkills: { ".ts": ["ts-skill"] },
-        injectionMethod: "systemPrompt"
+      await toolHooks["execute.after"]!({
+        tool: "read",
+        sessionID: "test-session",
+        input: { filePath: "Component.tsx" },
+        status: "completed",
       })
 
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
+      const contextEvent: any = {
+        sessionID: "test-session",
+        agent: "build",
+        system: [],
+      }
+      await sessionHooks["context"]!(contextEvent)
 
-      await (hooks["tool.execute.before"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { args: { filePath: "test.ts" } }
-      )
-      await (hooks["tool.execute.after"] as Function)(
-        { tool: "read", sessionID: "test-session", callID: "call-1" },
-        { title: "", output: "", metadata: {} }
-      )
-
-      const systemOutput = { system: [] as string[] }
-      await (hooks["experimental.chat.system.transform"] as Function)(
-        { sessionID: "test-session", model: { id: "test", providerID: "test" } },
-        systemOutput
-      )
-
-      expect(systemOutput.system[0]).toContain("Initial Content")
-      expect(systemOutput.system[0]).toContain("TypeScript Content")
-    })
-
-    it("parses injectionMethod from config correctly", async () => {
-      createConfig({ injectionMethod: "systemPrompt" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
-    })
-
-    it("falls back to default for invalid injectionMethod values", async () => {
-      createConfig({ injectionMethod: "invalid" })
-
-      const ctx = createMockContext()
-      const hooks = await PreloadSkillsPlugin(ctx)
-
-      expect(hooks["experimental.chat.system.transform"]).toBeDefined()
+      expect(contextEvent.system[0].text).toContain("JSX Content")
+      if (typeof cleanup === "function") cleanup()
     })
   })
 })

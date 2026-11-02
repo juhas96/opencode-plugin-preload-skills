@@ -16,7 +16,6 @@ export class SessionManagerImpl implements SessionManager {
   private readonly sessions = new Map<string, SessionState>()
   private readonly analytics = new Map<string, AnalyticsData>()
   private readonly pendingSkills = new Map<string, ParsedSkill[]>()
-  private readonly pendingFilePaths = new Map<string, string>()
   private readonly skillCache = new Map<string, ParsedSkill>()
 
   constructor(
@@ -89,18 +88,6 @@ export class SessionManagerImpl implements SessionManager {
 
   cacheSkill(skill: ParsedSkill): void {
     this.skillCache.set(skill.name, skill)
-  }
-
-  trackFilePath(callId: string, filePath: string): void {
-    this.pendingFilePaths.set(callId, filePath)
-  }
-
-  getFilePath(callId: string): string | undefined {
-    return this.pendingFilePaths.get(callId)
-  }
-
-  clearFilePath(callId: string): void {
-    this.pendingFilePaths.delete(callId)
   }
 
   cleanup(sessionId: string): void {

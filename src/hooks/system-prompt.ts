@@ -1,23 +1,27 @@
-import type { Model } from "@opencode-ai/sdk"
+import type { SessionContext } from "@opencode/plugin/promise/session"
 import type { PluginContext, ParsedSkill } from "../types.js"
 import { formatSkillsForInjection } from "../skills/loader.js"
 
-interface SystemPromptInput {
-  sessionID?: string
-  model: Model
-}
-
-interface SystemPromptOutput {
-  system: string[]
-}
-
 export function createSystemPromptHook(ctx: PluginContext) {
-  const { config, sessionManager, initialSkills, log, toast } = ctx
+  const { config, sessionManager, skillResolver, initialSkills, log, toast } = ctx
 
-  return async (input: SystemPromptInput, output: SystemPromptOutput): Promise<void> => {
-    if (!input.sessionID) return
+  return async (event: SessionContext): Promise<void> => {
+    if (!event.sessionID) return
 
-    const state = sessionManager.getState(input.sessionID)
+    const state = sessionManager.getState(event.sessionID)
+
+    if (event.agent && config.agentSkills?.[event.agent]) {
+      const result = skillResolver.loadWithBudget(
+        config.agentSkills[event.agent]!,
+        state.totalTokensUsed,
+        event.sessionID,
+        "agent"
+      )
+      if (result.skills.length > 0) {
+        sessionManager.queueSkills(event.sessionID, result.skills, "agent")
+      }
+    }
+
     const skillsToInject: ParsedSkill[] = []
 
     if (initialSkills.length > 0) {
@@ -31,14 +35,14 @@ export function createSystemPromptHook(ctx: PluginContext) {
       }
     }
 
-    const pending = sessionManager.getPendingSkills(input.sessionID)
+    const pending = sessionManager.getPendingSkills(event.sessionID)
     if (pending && pending.length > 0) {
       for (const skill of pending) {
         if (!skillsToInject.find((s) => s.name === skill.name)) {
           skillsToInject.push(skill)
         }
       }
-      sessionManager.clearPendingSkills(input.sessionID)
+      sessionManager.clearPendingSkills(event.sessionID)
     }
 
     if (skillsToInject.length > 0) {
@@ -47,13 +51,13 @@ export function createSystemPromptHook(ctx: PluginContext) {
         useMinification: config.useMinification,
         skillSettings: config.skillSettings,
       })
-      output.system.push(formatted)
+      event.system.push({ type: "text", text: formatted })
 
       if (!state.initialSkillsInjected && initialSkills.length > 0) {
         state.initialSkillsInjected = true
         const names = initialSkills.map((s) => s.name)
         log("info", "Injected skills into system prompt", {
-          sessionID: input.sessionID,
+          sessionID: event.sessionID,
           skills: names,
         })
         toast(`Loaded ${names.length} skill${names.length === 1 ? "" : "s"}: ${names.join(", ")}`)

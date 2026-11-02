@@ -1,30 +1,15 @@
-import type { Event } from "@opencode-ai/sdk"
+import type { SessionCompaction } from "@opencode/plugin/promise/session"
 import type { PluginContext } from "../types.js"
 import { formatSkillsForInjection } from "../skills/loader.js"
 
-interface CompactingInput {
-  sessionID: string
-}
-
-interface CompactingOutput {
-  context: string[]
-  prompt?: string
-}
-
-interface EventInput {
-  event: Event
-}
-
-export function createLifecycleHooks(ctx: PluginContext) {
+export function createCompactionHook(ctx: PluginContext) {
   const { config, sessionManager, log } = ctx
 
-  const compacting = async (
-    input: CompactingInput,
-    output: CompactingOutput
-  ): Promise<void> => {
+  return async (event: SessionCompaction): Promise<void> => {
     if (!config.persistAfterCompaction) return
+    if (!event.sessionID) return
 
-    const allLoadedSkills = sessionManager.getAllLoadedSkills(input.sessionID)
+    const allLoadedSkills = sessionManager.getAllLoadedSkills(event.sessionID)
     if (allLoadedSkills.length === 0) return
 
     const formatted = formatSkillsForInjection(allLoadedSkills, {
@@ -33,26 +18,16 @@ export function createLifecycleHooks(ctx: PluginContext) {
       skillSettings: config.skillSettings,
     })
 
-    output.context.push(
-      `## Preloaded Skills\n\nThe following skills were loaded during this session and should persist:\n\n${formatted}`
-    )
+    const persistentText = `## Preloaded Skills\n\nThe following skills were loaded during this session and should persist:\n\n${formatted}`
+    event.system.push({ type: "text", text: persistentText })
 
-    sessionManager.markInitialSkillsInjected(input.sessionID)
+    sessionManager.markInitialSkillsInjected(event.sessionID)
 
     log("info", "Added all loaded skills to compaction context", {
-      sessionID: input.sessionID,
+      sessionID: event.sessionID,
       skillCount: allLoadedSkills.length,
     })
 
     sessionManager.saveAnalytics()
   }
-
-  const event = async ({ event }: EventInput): Promise<void> => {
-    if (event.type === "session.deleted" && "sessionID" in event.properties) {
-      const sessionID = event.properties.sessionID as string
-      sessionManager.cleanup(sessionID)
-    }
-  }
-
-  return { compacting, event }
 }

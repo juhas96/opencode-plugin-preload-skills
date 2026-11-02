@@ -1,4 +1,4 @@
-import type { ToolContext } from "@opencode-ai/plugin"
+import type { ToolEditor, ToolContext } from "@opencode/plugin/promise/tool"
 import type { SessionManager, ToastFn } from "../types.js"
 
 interface SkillInfo {
@@ -28,17 +28,23 @@ function formatToast(skills: SkillInfo[], tokensUsed: number): string {
   ].join("\n")
 }
 
-export function createLoadedSkillsTool(sessionManager: SessionManager, toast: ToastFn) {
-  return {
-    description:
-      "List all preloaded skills for the current session — names, descriptions, and token counts.",
-    args: {},
-    async execute(_args: Record<string, never>, context: ToolContext) {
+export function registerLoadedSkillsTool(editor: ToolEditor, sessionManager: SessionManager, toast: ToastFn) {
+  editor.add({
+    name: "loaded_skills",
+    description: "List all preloaded skills for the current session — names, descriptions, and token counts.",
+    input: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    async execute(_input: unknown, context: ToolContext) {
       const state = sessionManager.getState(context.sessionID)
       const skills = sessionManager.getAllLoadedSkills(context.sessionID)
 
       if (skills.length === 0) {
-        return "No skills currently loaded for this session."
+        return {
+          content: "No skills currently loaded for this session.",
+        }
       }
 
       const skillInfos: SkillInfo[] = skills.map((skill) => ({
@@ -49,11 +55,15 @@ export function createLoadedSkillsTool(sessionManager: SessionManager, toast: To
 
       toast(formatToast(skillInfos, state.totalTokensUsed), "success")
 
-      return [
+      const tableContent = [
         formatSkillTable(skillInfos),
         "",
         `Token budget: ${state.totalTokensUsed} used`,
       ].join("\n")
+
+      return {
+        content: tableContent,
+      }
     },
-  }
+  })
 }

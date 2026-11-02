@@ -65,9 +65,6 @@ export interface SessionManager {
   getAllLoadedSkills(sessionId: string): ParsedSkill[]
   getCachedSkill(name: string): ParsedSkill | undefined
   cacheSkill(skill: ParsedSkill): void
-  trackFilePath(callId: string, filePath: string): void
-  getFilePath(callId: string): string | undefined
-  clearFilePath(callId: string): void
   cleanup(sessionId: string): void
   saveAnalytics(): void
   markInitialSkillsInjected(sessionId: string): void
